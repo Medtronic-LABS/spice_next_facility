@@ -76,7 +76,8 @@ a thin app image on a **reusable base** (`docker/base/`: Frappe, ERPNext, Frappe
 in `docker/base/versions.env`, rebuilt only when that file changes), runs the test suite inside it against
 MariaDB, pushes to `ghcr.io/medtronic-labs/spice_next_facility`, and deploys over SSH (`deploy/`: Caddy for HTTPS +
 the app + MariaDB, health check with automatic rollback, daily backups to S3). Runbook, AWS resources and the
-secrets list: [`docs/deployment/aws-ec2.md`](docs/deployment/aws-ec2.md).
+secrets list: [`docs/deployment/aws-ec2.md`](docs/deployment/aws-ec2.md). Try the same stack locally first with
+`deploy/local-test.sh up` (http://localhost:8088).
 
 ### Install
 

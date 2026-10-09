@@ -41,6 +41,16 @@ workflow manually with **rebuild_base** to rebuild it on demand.
 No local AI model runs here (`SPICE_AI_OLLAMA_ENABLED=0`): AI summaries are off; Ask Data works with
 Claude or OpenAI, which see only the question and field names, and answers are written from the results.
 
+### Trying the stack locally
+
+`deploy/local-test.sh up` runs this exact stack (same compose file, Caddyfile, image build and site setup)
+on your machine from the working tree, uncommitted changes included, at http://localhost:8088. The first run
+builds the base (~5–10 min); later runs reuse it and rebuild only the app layer. It differs from EC2 only in
+ports (8088 / 18000, set by `LOCAL_PORT` / `LOCAL_APP_PORT`; a dev bench usually holds 8000), plain HTTP and
+the SSH deploy. Settings live in `deploy/.env.local` (gitignored, written on first run; Administrator /
+`admin`). `deploy/local-test.sh down` removes it with its data; `logs` and `status` inspect it. After changing
+`docker/base/`, pass `up --rebuild-base`.
+
 ---
 
 ## 1. AWS resources (once)
