@@ -7,7 +7,7 @@ APP = "spice_facility"
 
 
 def before_install():
-	adopt_module_defs()
+	release_hand_made_modules()
 
 
 def after_install():
@@ -26,9 +26,15 @@ def before_uninstall():
 	remove_navigation()
 
 
-def adopt_module_defs():
-	"""Take over area modules a site created by hand before this app existed, so installing does
-	not trip over an existing Module Def of the same name owned by another app."""
-	for module in frappe.get_module_list(APP):
-		if frappe.db.exists("Module Def", module):
-			frappe.db.set_value("Module Def", module, {"app_name": APP, "custom": 0}, update_modified=False)
+def release_hand_made_modules():
+	"""Drop custom Module Defs a site made for these menus before this app existed.
+
+	Left in place, the installer renames them out of the way ("Outpatient (Custom)") and keeps them
+	as clutter. Tearing the navigation down first unlinks every workspace and sidebar from them, so
+	they can go; `after_install` rebuilds the navigation on this app's own modules."""
+	hand_made = [m for m in frappe.get_module_list(APP) if frappe.db.get_value("Module Def", m, "custom")]
+	if not hand_made:
+		return
+	remove_navigation()
+	for module in hand_made:
+		frappe.delete_doc("Module Def", module, ignore_permissions=True, force=True)
