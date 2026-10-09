@@ -35,11 +35,49 @@ class FakeProvider:
 		return self.text
 
 
+TEST_PATIENT = "SF Test Patient"
+TEST_DEPARTMENT = "SF Test Department"
+
+
+def _raw_insert(doctype, name, values):
+	"""Insert a row without running controllers: a CI site has no company/setup-wizard data, which Health's
+	validations (customer creation, appointment types) would otherwise require."""
+	if frappe.db.exists(doctype, name):
+		return
+	doc = frappe.new_doc(doctype)
+	doc.update(values)
+	doc.name = name
+	doc.db_insert()
+
+
+def ensure_fixtures():
+	"""Records the AI tests need, so they pass on an empty CI site as well as on a seeded one."""
+	if not frappe.db.exists("Gender", "Female"):
+		frappe.get_doc({"doctype": "Gender", "gender": "Female"}).insert(ignore_permissions=True)
+	if not frappe.db.exists("Medical Department", TEST_DEPARTMENT):
+		frappe.get_doc({"doctype": "Medical Department", "department": TEST_DEPARTMENT}).insert(ignore_permissions=True)
+	_raw_insert("Patient", TEST_PATIENT, {"first_name": "SF Test", "last_name": "Patient", "patient_name": TEST_PATIENT,
+	                                      "sex": "Female", "dob": "1980-01-01", "status": "Active"})
+	for i in (1, 2):
+		_raw_insert("Patient Encounter", f"SF-TEST-ENC-{i}", {
+			"patient": TEST_PATIENT, "patient_name": TEST_PATIENT, "medical_department": TEST_DEPARTMENT,
+			"encounter_date": frappe.utils.nowdate(), "encounter_time": "10:00:00", "practitioner_name": "SF Test Doctor",
+			"status": "Completed", "docstatus": 1})
+
+
 def any_patient():
-	return frappe.db.get_value("Patient", {}, ["name", "patient_name"], as_dict=True)
+	ensure_fixtures()
+	return frappe.db.get_value("Patient", TEST_PATIENT, ["name", "patient_name"], as_dict=True)
 
 
-class TestCatalogAndQuery(IntegrationTestCase):
+class AITestCase(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		ensure_fixtures()
+
+
+class TestCatalogAndQuery(AITestCase):
 	def test_every_catalog_field_exists_on_this_site(self):
 		for dataset in data_catalog.DATASETS:
 			if not frappe.db.exists("DocType", dataset.doctype):
@@ -85,7 +123,7 @@ class TestCatalogAndQuery(IntegrationTestCase):
 		self.assertEqual(text, "See [[Lab Test:LT-1]] and Somebody")
 
 
-class TestDataPolicy(IntegrationTestCase):
+class TestDataPolicy(AITestCase):
 	def test_cloud_planner_never_receives_patient_values(self):
 		patient = any_patient()
 		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"},
@@ -103,7 +141,9 @@ class TestDataPolicy(IntegrationTestCase):
 		patient = any_patient()
 		cloud = FakeProvider("Claude", False, json_answers=[{"mode": "record"}])
 		local = FakeProvider("Ollama", True, text="Last HbA1c was 8.2%.")
+		# This is about a deployment that HAS a local model; CI runs with SPICE_AI_OLLAMA_ENABLED=0.
 		with patch("spice_facility.ai.talk_to_data.chat_provider", return_value=cloud), \
+		     patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=True), \
 		     patch("spice_facility.ai.talk_to_data.local_provider", return_value=local):
 			answer, meta = run_question("When was the last HbA1c?", "Claude", {"doctype": "Patient", "name": patient.name})
 		self.assertEqual(meta["mode"], "Record")
@@ -111,7 +151,7 @@ class TestDataPolicy(IntegrationTestCase):
 		self.assertNotIn(patient.patient_name, " ".join(cloud.sent))
 
 
-class TestWithoutLocalModel(IntegrationTestCase):
+class TestWithoutLocalModel(AITestCase):
 	def test_answers_are_built_from_the_result_and_record_questions_stay_data(self):
 		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
 		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False), \
@@ -133,7 +173,7 @@ class TestWithoutLocalModel(IntegrationTestCase):
 			frappe.conf.pop("spice_ai_ollama_enabled", None)
 
 
-class TestSummary(IntegrationTestCase):
+class TestSummary(AITestCase):
 	def test_context_hash_is_stable_and_flags_are_computed(self):
 		patient = any_patient()
 		doc = frappe.get_doc("Patient", patient.name)
@@ -180,7 +220,7 @@ class TestSettingsAndAccess(IntegrationTestCase):
 			frappe.set_user("Administrator")
 
 
-class TestMcp(IntegrationTestCase):
+class TestMcp(AITestCase):
 	def call(self, payload):
 		from spice_facility.api.mcp import mcp
 
