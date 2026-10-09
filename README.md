@@ -7,7 +7,7 @@ Facility (hospital) layer for SPICE on top of **Frappe Health** (`healthcare`, g
 | Area | Where | When |
 |---|---|---|
 | Desk navigation — Healthcare **Dock → Menu → items** (9 menus) | `desk_navigation/` | install + every `bench migrate` |
-| Full Width desk layout as the default for every user | `public/js/full_width_default.js` | every desk load |
+| Full Width desk layout as the default for every user, with the page header and main layout freed of Frappe 16's 2100px cap | `public/js/full_width_default.js`, `public/css/full_width.css` | every desk load |
 | Health v16 fix: Lab Test history config types `lab_test_comment` as Table (it is Text), which crashes submitting a commented Lab Test | `setup/fixes.py` | install + every `bench migrate` |
 | Demo data across every Health module | `demo/seed.py` | only when run explicitly |
 | **Overview tab** on 13 Health forms — related-record tables, number cards, charts and clinical summaries via frappe_theme `sva_ft` | `form_ux/` (spec → apply), `api/form_summary.py`, `public/js/form_ux*.js`, `public/css/form_ux.css` | install + every `bench migrate` |

@@ -1,0 +1,7 @@
+/* Frappe 16's Full Width layout widens the page body but still caps the page header and the main
+   layout at 2100px, so on wide screens the title bar and side panel float in from the edges while the
+   content runs edge to edge. Lift that cap in Full Width only; Compact keeps Frappe's own widths. */
+body.full-width .page-head .container,
+body.full-width .layout-main {
+	max-width: none !important;
+}

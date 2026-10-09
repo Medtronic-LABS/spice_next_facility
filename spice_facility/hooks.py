@@ -9,6 +9,8 @@ app_license = "gpl-3.0"
 # frappe_theme renders the `sva_ft` blocks on the Overview tab of Health forms (form_ux/).
 required_apps = ["erpnext", "healthcare", "frappe_theme"]
 
+app_include_css = ["/assets/spice_facility/css/full_width.css"]
+
 app_include_js = [
 	"/assets/spice_facility/js/full_width_default.js",
 	"/assets/spice_facility/js/form_ux_strings.js",
