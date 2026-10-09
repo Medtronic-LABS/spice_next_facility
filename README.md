@@ -68,6 +68,14 @@ fields twice, so custom-field validation is skipped for it only while that defec
 - **Needs an RQ worker** (`bench worker --queue default,short,long`); a dedicated `--queue long` worker
   keeps AI jobs from waiting behind other sites' backlog.
 
+### Deploy (AWS EC2)
+
+`.github/workflows/docker-publish.yml` builds an all-in-one image (`docker/allinone/`) from pinned refs of
+ERPNext, Frappe Health, frappe_theme and this app, runs the test suite inside it against MariaDB, pushes it
+to `ghcr.io/medtronic-labs/spice_next_facility`, and on `main` deploys it to an EC2 host over SSH
+(`deploy/`: Caddy for HTTPS + the app + MariaDB, health check with automatic rollback, daily backups to
+S3). Runbook, AWS resources and the GitHub secrets list: [`docs/deployment/aws-ec2.md`](docs/deployment/aws-ec2.md).
+
 ### Install
 
 ```bash

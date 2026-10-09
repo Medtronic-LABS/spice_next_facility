@@ -15,6 +15,7 @@ LOCAL_PROVIDERS = (OLLAMA,)
 
 # site_config / env keys that override stored values
 OVERRIDES = {
+	"ollama_enabled": "spice_ai_ollama_enabled",
 	"ollama_url": "spice_ai_ollama_url",
 	"anthropic_api_key": "spice_ai_anthropic_api_key",
 	"openai_api_key": "spice_ai_openai_api_key",
@@ -55,12 +56,25 @@ class AIConfig:
 	def chat_providers(self):
 		return [p.name for p in self.providers.values() if p.enabled and p.in_chat]
 
+	def has_local(self):
+		return any(p.enabled and p.is_local for p in self.providers.values())
+
 
 def _override(fieldname):
 	key = OVERRIDES.get(fieldname)
 	if not key:
 		return None
-	return frappe.conf.get(key) or os.environ.get(key.upper())
+	value = frappe.conf.get(key)
+	# `is None`, not falsiness: a configured 0 (e.g. spice_ai_ollama_enabled=0) is an override too.
+	return value if value is not None else os.environ.get(key.upper())
+
+
+def _flag(settings, fieldname):
+	"""A checkbox setting, unless the deployment overrides it (e.g. spice_ai_ollama_enabled=0)."""
+	value = _override(fieldname)
+	if value is None or value == "":
+		return bool(settings.get(fieldname))
+	return str(value).strip().lower() not in ("0", "false", "no", "off")
 
 
 def _secret(settings, fieldname):
@@ -76,7 +90,7 @@ def get_config() -> AIConfig:
 	s = frappe.get_cached_doc(SETTINGS)
 	providers = {
 		OLLAMA: ProviderConfig(
-			name=OLLAMA, enabled=bool(s.ollama_enabled), model=s.ollama_model,
+			name=OLLAMA, enabled=_flag(s, "ollama_enabled"), model=s.ollama_model,
 			base_url=(_override("ollama_url") or s.ollama_url or "").rstrip("/") or None,
 			timeout=s.ollama_timeout or 300, in_chat=bool(s.ollama_in_chat), is_local=True,
 			keep_alive=s.ollama_keep_alive or None, temperature=s.ollama_temperature or 0,
@@ -92,8 +106,10 @@ def get_config() -> AIConfig:
 			in_chat=bool(s.openai_in_chat), is_local=False, api_key=_secret(s, "openai_api_key"),
 		),
 	}
+	local_enabled = any(p.enabled and p.is_local for p in providers.values())
 	return AIConfig(
-		providers=providers, summary_enabled=bool(s.summary_enabled), chat_enabled=bool(s.chat_enabled),
+		# Summaries read patient records, so they exist only while a local model is available.
+		providers=providers, summary_enabled=bool(s.summary_enabled) and local_enabled, chat_enabled=bool(s.chat_enabled),
 		floating_chat_enabled=bool(s.floating_chat_enabled), summary_provider=s.summary_provider or OLLAMA,
 		chat_default_provider=s.chat_default_provider or OLLAMA,
 		allowed_roles=tuple(r.role for r in s.allowed_roles or []),

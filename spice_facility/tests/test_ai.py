@@ -111,6 +111,28 @@ class TestDataPolicy(IntegrationTestCase):
 		self.assertNotIn(patient.patient_name, " ".join(cloud.sent))
 
 
+class TestWithoutLocalModel(IntegrationTestCase):
+	def test_answers_are_built_from_the_result_and_record_questions_stay_data(self):
+		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
+		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False), \
+		     patch("spice_facility.ai.talk_to_data.local_provider", side_effect=AssertionError("no local model here")):
+			answer = answer_data("Encounters by department", cloud, None, None, False)
+		self.assertIsNone(answer["narrator"])
+		self.assertTrue(answer["text"])
+		self.assertIn("chart", answer)
+
+	def test_summaries_switch_off_without_a_local_model(self):
+		from spice_facility.ai.config import get_config
+
+		frappe.conf.spice_ai_ollama_enabled = 0
+		try:
+			config = get_config()
+			self.assertFalse(config.has_local())
+			self.assertFalse(config.summary_enabled)
+		finally:
+			frappe.conf.pop("spice_ai_ollama_enabled", None)
+
+
 class TestSummary(IntegrationTestCase):
 	def test_context_hash_is_stable_and_flags_are_computed(self):
 		patient = any_patient()

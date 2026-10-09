@@ -1,0 +1,253 @@
+# Build, test, publish and deploy spice_next_facility (Frappe Health + ERPNext + frappe_theme +
+# spice_facility) as one all-in-one image (docker/allinone/), then roll it out to an AWS EC2 host over
+# SSH (deploy/). Modelled on frappe_uhis's docker-publish.yml, with two additions: the image is tested
+# (bench run-tests inside the exact image, against MariaDB) before it is pushed, and the deploy rolls
+# back automatically when the new build is not healthy.
+#
+#   pull_request  -> checks + build + test            (nothing pushed, nothing deployed)
+#   push to main  -> checks + build + test + push (sha-<commit>, latest) + deploy to production
+#   tag v*.*.*    -> checks + build + test + push (version tag)        (no deploy)
+#   manual run    -> same as push, with app refs selectable; deploys only from main
+#
+# Required GitHub "production" environment secrets: see docs/deployment/aws-ec2.md.
+name: Build, test, publish and deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      frappe_branch:
+        description: Frappe branch for `bench init`
+        default: version-16
+      erpnext_ref:
+        description: ERPNext git ref
+        default: version-16
+      healthcare_ref:
+        description: Frappe Health git ref
+        default: version-16
+      frappe_theme_ref:
+        description: frappe_theme git ref
+        default: development
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+  # GHCR paths must be lowercase; the org's GitHub casing is Medtronic-LABS.
+  IMAGE_NAME: medtronic-labs/spice_next_facility
+  CI_IMAGE: spice_next_facility:ci
+  FRAPPE_BRANCH: ${{ inputs.frappe_branch || 'version-16' }}
+
+jobs:
+  checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Python compiles
+        run: python -m compileall -q spice_facility
+      - name: JavaScript parses
+        run: find spice_facility -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
+      - name: Shell scripts parse
+        run: for f in docker/allinone/*.sh deploy/*.sh; do bash -n "$f"; done
+      - name: Compose file is valid
+        working-directory: deploy
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml config --quiet
+
+  build-test-publish:
+    name: Build, test, publish image
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      # Every app is checked out at a pinned ref and COPYed into the image: what is tested is what ships.
+      - name: Checkout ERPNext
+        uses: actions/checkout@v4
+        with:
+          repository: frappe/erpnext
+          ref: ${{ inputs.erpnext_ref || 'version-16' }}
+          path: apps/erpnext
+      - name: Checkout Frappe Health
+        uses: actions/checkout@v4
+        with:
+          repository: frappe/health
+          ref: ${{ inputs.healthcare_ref || 'version-16' }}
+          path: apps/healthcare
+      - name: Checkout frappe_theme
+        uses: actions/checkout@v4
+        with:
+          repository: Suvaidyam/frappe_theme
+          ref: ${{ inputs.frappe_theme_ref || 'development' }}
+          path: apps/frappe_theme
+      - name: Checkout spice_facility
+        uses: actions/checkout@v4
+        with:
+          path: apps/spice_facility
+
+      - name: Image tag for this commit
+        id: tag
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (local, for tests)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/spice_facility/docker/allinone/Dockerfile
+          build-args: FRAPPE_BRANCH=${{ env.FRAPPE_BRANCH }}
+          load: true
+          tags: ${{ env.CI_IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test inside the image (site setup + bench run-tests)
+        run: |
+          set -eu
+          docker network create ci
+          docker run -d --name mariadb --network ci -e MYSQL_ROOT_PASSWORD=ci mariadb:10.6 \
+            --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci \
+            --skip-character-set-client-handshake --skip-innodb-read-only-compressed
+          docker run --rm --network ci --user frappe \
+            -e SITE_NAME=ci.localhost -e DB_HOST=mariadb -e DB_ROOT_PASSWORD=ci -e ADMIN_PASSWORD=ci-admin \
+            -e SPICE_AI_OLLAMA_ENABLED=0 \
+            "${CI_IMAGE}" bash -c '
+              set -eu
+              redis-server /home/frappe/redis.conf --daemonize yes
+              /usr/local/bin/site-setup.sh
+              cd /home/frappe/frappe-bench
+              bench --site ci.localhost set-config allow_tests true
+              bench --site ci.localhost run-tests --app spice_facility
+            '
+
+      - name: Show MariaDB logs on failure
+        if: failure()
+        run: docker logs mariadb || true
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        if: github.event_name != 'pull_request'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.tag.outputs.tag }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+
+      - name: Push image (same build, from cache)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/spice_facility/docker/allinone/Dockerfile
+          build-args: FRAPPE_BRANCH=${{ env.FRAPPE_BRANCH }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+  deploy:
+    name: Deploy to AWS EC2
+    needs: build-test-publish
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy deploy files to the host
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          source: "deploy/docker-compose.yml,deploy/Caddyfile,deploy/deploy.sh"
+          target: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
+          strip_components: 1
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          # Passed via `envs:` so secret values never appear as literal text in the remote script.
+          IMAGE_TAG: ${{ needs.build-test-publish.outputs.tag }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
+          SITE_NAME: ${{ secrets.SITE_NAME }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'ap-south-1' }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          SPICE_AI_ANTHROPIC_API_KEY: ${{ secrets.SPICE_AI_ANTHROPIC_API_KEY }}
+          SPICE_AI_OPENAI_API_KEY: ${{ secrets.SPICE_AI_OPENAI_API_KEY }}
+          GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          # deploy.sh waits up to 15 min for a first-ever site setup, plus a possible rollback.
+          command_timeout: 40m
+          envs: IMAGE_TAG,DEPLOY_PATH,SITE_NAME,DOMAIN,ADMIN_PASSWORD,DB_ROOT_PASSWORD,BACKUP_S3_BUCKET,AWS_DEFAULT_REGION,ALERT_WEBHOOK_URL,SPICE_AI_ANTHROPIC_API_KEY,SPICE_AI_OPENAI_API_KEY,GHCR_PULL_USER,GHCR_PULL_TOKEN
+          script: |
+            set -eu
+            cd "${DEPLOY_PATH}"
+
+            # .env is CI-owned: rewritten from secrets on every deploy, never edited on the host.
+            umask 077
+            cat > .env <<ENV
+            IMAGE_TAG=${IMAGE_TAG}
+            GHCR_OWNER=medtronic-labs
+            SITE_NAME=${SITE_NAME}
+            DOMAIN=${DOMAIN}
+            ADMIN_PASSWORD=${ADMIN_PASSWORD}
+            DB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+            SPICE_AI_OLLAMA_ENABLED=0
+            SPICE_AI_ANTHROPIC_API_KEY=${SPICE_AI_ANTHROPIC_API_KEY}
+            SPICE_AI_OPENAI_API_KEY=${SPICE_AI_OPENAI_API_KEY}
+            BACKUP_S3_BUCKET=${BACKUP_S3_BUCKET}
+            AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+            ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL}
+            ENV
+
+            # Private GHCR package: log in with a read-only token if one is configured.
+            if [ -n "${GHCR_PULL_TOKEN}" ]; then
+              echo "${GHCR_PULL_TOKEN}" | docker login ghcr.io -u "${GHCR_PULL_USER}" --password-stdin
+            fi
+
+            chmod +x deploy.sh
+            ./deploy.sh

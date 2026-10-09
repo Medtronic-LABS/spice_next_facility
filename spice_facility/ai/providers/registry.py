@@ -12,6 +12,10 @@ from spice_facility.ai.providers.openai import OpenAIProvider
 CLASSES = {OLLAMA: OllamaProvider, CLAUDE: ClaudeProvider, OPENAI: OpenAIProvider}
 
 
+class NoLocalProvider(frappe.ValidationError):
+	"""Raised when something needs the local model (patient data) but none is enabled."""
+
+
 def build(name, config=None) -> LLMProvider:
 	provider_config = (config or get_config()).provider(name)
 	if not provider_config:
@@ -30,9 +34,14 @@ def get_provider(name) -> LLMProvider:
 def chat_provider(name=None) -> LLMProvider:
 	"""The provider a user picked for chat, or the default; only ones offered in chat."""
 	config = get_config()
-	name = name or config.chat_default_provider
-	if name not in config.chat_providers():
+	available = config.chat_providers()
+	if name and name not in available:
 		frappe.throw(_("AI provider {0} is not available in chat").format(name), frappe.ValidationError)
+	if not name:
+		# The default may be switched off on this deployment (e.g. no local model): use what is available.
+		name = config.chat_default_provider if config.chat_default_provider in available else next(iter(available), None)
+	if not name:
+		frappe.throw(_("No AI provider is enabled for chat."), frappe.ValidationError)
 	return build(name, config)
 
 
@@ -41,5 +50,9 @@ def local_provider() -> LLMProvider:
 	config = get_config()
 	provider = build(config.summary_provider, config)
 	if not provider.is_local or not provider.config.enabled:
-		frappe.throw(_("No local AI provider is enabled"), frappe.ValidationError)
+		raise NoLocalProvider(_("No local AI model is configured on this server."))
 	return provider
+
+
+def has_local_provider() -> bool:
+	return get_config().has_local()

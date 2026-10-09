@@ -21,7 +21,7 @@ from frappe.utils import nowdate
 
 from spice_facility.ai import data_catalog, prompts, query
 from spice_facility.ai.config import get_config
-from spice_facility.ai.providers.registry import chat_provider, local_provider
+from spice_facility.ai.providers.registry import chat_provider, has_local_provider, local_provider
 from spice_facility.ai.summary_context import SUPPORTED as RECORD_DOCTYPES
 from spice_facility.ai.summary_context import build_context, record_refs, serialise
 
@@ -101,6 +101,9 @@ def keep_known_links(text, allowed):
 def choose_mode(question, page, use_context, provider):
 	if not use_context or not page or page["kind"] != "form" or page["doctype"] not in RECORD_DOCTYPES:
 		return "data"
+	if not has_local_provider():
+		# Record questions read patient data, which only a local model may see.
+		return "data"
 	system = (f"The user is looking at one {page['doctype']} record. Decide if the question is about THAT record "
 	          "(its details, history, results, summary) -> record, or asks for counts, trends or lists across "
 	          "many records (even if limited to this record's related data) -> data.")
@@ -154,8 +157,13 @@ def answer_data(question, provider, history, page, use_context):
 	result = query.execute(spec, dataset, scope, config.max_rows)
 	shown = query.present(result, spec, dataset)
 
-	local = local_provider()
 	preview = shown.get("table", {}).get("rows", [])[:NARRATE_ROWS] if "table" in shown else []
+	if not has_local_provider():
+		return {"mode": "data", "text": plain_summary(shown, spec, dataset, result["rows_read"]),
+		        "title": spec["title"] or dataset["label"], "dataset": dataset["doctype"], "spec": spec,
+		        "how": query.describe(spec, dataset, scope_labels), "scope": scope_labels,
+		        "rows_read": result["rows_read"], "truncated": result["truncated"], "narrator": None, **shown}
+	local = local_provider()
 	measure_type = dataset["fields"].get(spec["measure"]["field"], {}).get("type") or frappe.get_meta(
 		dataset["doctype"]).get_field(spec["measure"]["field"]).fieldtype if spec["measure"]["field"] else None
 	payload = {"question": question, "plan": query.describe(spec, dataset, scope_labels),
@@ -193,6 +201,22 @@ def tidy(spec, dataset, question):
 	if spec["output"] in ("bar", "line", "pie", "donut", "table") and not spec["group_by"] and spec["time_bucket"] == "none":
 		spec["output"] = "number"
 	return spec
+
+
+def plain_summary(shown, spec, dataset, rows_read):
+	"""A written answer built from the result itself, used when no local model may narrate it."""
+	if shown.get("number"):
+		return _("{0}: {1}").format(shown["number"]["label"], frappe.format(shown["number"]["value"], {"fieldtype": "Float"}))
+	rows = (shown.get("table") or {}).get("rows") or []
+	if not rows:
+		return _("No matching records.")
+	if shown["kind"] == "groups":
+		top = ", ".join(f"{r.get('display', r.get('label'))} ({frappe.format(r['value'], {'fieldtype': 'Float'})})" for r in rows[:5])
+		return _("{0} by {1}: {2}.").format(rows and shown["table"]["columns"][1]["label"],
+		                                     shown["table"]["columns"][0]["label"], top)
+	if shown["kind"] == "series":
+		return _("{0} across {1} periods; see the chart and table.").format(dataset["label"], len(rows))
+	return _("{0} matching {1}; showing {2}.").format(rows_read, dataset["label"].lower(), len(rows))
 
 
 def run_question(question, provider_name=None, page=None, use_context=True, history=None):

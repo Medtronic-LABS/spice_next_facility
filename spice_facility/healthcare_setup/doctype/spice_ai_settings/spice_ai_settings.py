@@ -9,8 +9,8 @@ class SPICEAISettings(Document):
 	def validate(self):
 		if self.summary_provider not in LOCAL_PROVIDERS:
 			frappe.throw(_("Summaries read patient records, so the summary provider must run locally."))
-		if not self.ollama_enabled and (self.summary_enabled or self.chat_enabled or self.floating_chat_enabled):
-			frappe.throw(_("Ollama must stay enabled: it writes every answer and summary on this server."))
+		if not self.ollama_enabled and self.summary_enabled:
+			frappe.throw(_("AI summaries need the local model: enable Ollama or turn summaries off."))
 		for provider, enabled, key_field, model in (
 			(CLAUDE, self.claude_enabled, "anthropic_api_key", self.claude_model),
 			(OPENAI, self.openai_enabled, "openai_api_key", self.openai_model),

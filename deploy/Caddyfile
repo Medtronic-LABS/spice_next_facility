@@ -1,0 +1,25 @@
+# Public entry point. With DOMAIN set to a real hostname whose DNS points at this EC2 instance, Caddy
+# obtains and renews a Let's Encrypt certificate automatically; with DOMAIN unset it serves plain HTTP
+# on :80 (first boot / before DNS exists).
+{$DOMAIN} {
+	encode gzip
+
+	# Realtime (socket.io) is served by the app's node process on 9000.
+	@socketio path /socket.io/*
+	reverse_proxy @socketio app:9000 {
+		header_up Host {$SITE_NAME}
+		header_up X-Frappe-Site-Name {$SITE_NAME}
+	}
+
+	reverse_proxy app:8000 {
+		header_up Host {$SITE_NAME}
+		header_up X-Frappe-Site-Name {$SITE_NAME}
+		transport http {
+			read_timeout 180s
+		}
+	}
+
+	request_body {
+		max_size 50MB
+	}
+}

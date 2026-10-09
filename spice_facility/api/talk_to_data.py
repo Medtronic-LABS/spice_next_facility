@@ -32,10 +32,12 @@ def settings() -> dict:
 	"""What the chat UI needs to render: enabled providers, default, feature switches. No secrets."""
 	config = get_config()
 	allowed = _user_allowed()
+	available = config.chat_providers()
+	usable = bool(config.chat_enabled and allowed and available)
 	return {
-		"allowed": allowed, "chat_enabled": config.chat_enabled and allowed,
-		"floating_chat_enabled": config.floating_chat_enabled and config.chat_enabled and allowed,
-		"default_provider": config.chat_default_provider,
+		"allowed": allowed, "chat_enabled": usable, "floating_chat_enabled": usable and config.floating_chat_enabled,
+		"default_provider": config.chat_default_provider if config.chat_default_provider in available else next(iter(available), None),
+		"local_model": config.has_local(),
 		"providers": [{"name": p.name, "model": p.model, "is_local": p.is_local}
 		              for p in config.providers.values() if p.enabled and p.in_chat],
 	}

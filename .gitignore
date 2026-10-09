@@ -53,3 +53,7 @@ jspm_packages/
 
 # Aider AI Chat
 .aider*
+
+# deployment secrets (written by CI on the host)
+deploy/.env
+.env

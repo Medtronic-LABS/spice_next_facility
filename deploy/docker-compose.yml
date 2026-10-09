@@ -1,0 +1,90 @@
+# spice_next_facility on a single AWS EC2 host. Copied to the host and run by
+# .github/workflows/docker-publish.yml (deploy job -> deploy/deploy.sh). See docs/deployment/aws-ec2.md.
+#
+#   caddy   :80/:443  public entry point; automatic HTTPS for ${DOMAIN}
+#   app     all-in-one image (gunicorn, socketio, workers, scheduler, Redis, daily backup)
+#   mariadb MariaDB 10.6, data on the instance's EBS volume
+#
+# The app and MariaDB publish nothing on the host's public interfaces; only Caddy does.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  mariadb:
+    image: mariadb:10.6
+    restart: unless-stopped
+    # Frappe's required server settings (utf8mb4, no compressed read-only tables).
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+      - --innodb-buffer-pool-size=${DB_BUFFER_POOL:-1G}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD must be set}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *default-logging
+    networks: [backend]
+
+  app:
+    image: ghcr.io/${GHCR_OWNER:-medtronic-labs}/spice_next_facility:${IMAGE_TAG:?IMAGE_TAG must be set}
+    container_name: spice-next-facility
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      # Loopback only: the deploy health check uses it; the public path is Caddy.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Site config, scoped DB credentials, uploaded files and local backups. Code ships in the image.
+      - sites:/home/frappe/frappe-bench/sites
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-H", "Host: ${SITE_NAME}", "http://localhost:8000/api/method/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 900s
+    logging: *default-logging
+    networks: [backend]
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-:80}
+      SITE_NAME: ${SITE_NAME}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [app]
+    logging: *default-logging
+    networks: [backend]
+
+volumes:
+  mariadb-data:
+  sites:
+  caddy-data:
+  caddy-config:
+
+networks:
+  backend:
