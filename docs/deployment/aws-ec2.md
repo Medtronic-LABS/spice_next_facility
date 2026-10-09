@@ -1,5 +1,8 @@
 # Deploying spice_next_facility on AWS EC2
 
+**Dev environment:** `spice-facility-dev.labsplatform.com` (GitHub environment `dev`). `http://` redirects to
+`https://` once the certificate is issued.
+
 One EC2 instance runs three containers (`deploy/docker-compose.yml`):
 
 | Container | What | Exposed |
@@ -34,7 +37,8 @@ Claude or OpenAI, which see only the question and field names, and answers are w
    job uses it through the instance metadata service — no AWS keys are stored anywhere. Containers sit on
    a Docker bridge, so set the metadata hop limit to 2:
    `aws ec2 modify-instance-metadata-options --instance-id <id> --http-put-response-hop-limit 2 --http-tokens required`
-6. **DNS**: an `A` record for your domain → the Elastic IP (Caddy needs it to obtain the certificate).
+6. **DNS**: an `A` record `spice-facility-dev.labsplatform.com` → the Elastic IP (Caddy needs it, plus
+   ports 80/443 open, to obtain the Let's Encrypt certificate).
 
 ## 2. Prepare the instance (once)
 
@@ -50,8 +54,8 @@ Create a **deploy key pair** for GitHub (`ssh-keygen -t ed25519 -f deploy_key -N
 
 Repository: `Medtronic-LABS/spice_next_facility` (this app's source, Python package `spice_facility`).
 
-Create an environment **`production`** (Settings → Environments). Optionally add required reviewers so
-every deploy waits for an approval. Add:
+Create an environment **`dev`** (Settings → Environments; already created with its variables). Optionally add
+required reviewers so every deploy waits for an approval. Add:
 
 **Secrets**
 
@@ -61,8 +65,6 @@ every deploy waits for an approval. Add:
 | `DEPLOY_USER` | `ubuntu` |
 | `DEPLOY_SSH_KEY` | private key of the deploy key pair |
 | `DEPLOY_PORT` | optional, default 22 |
-| `SITE_NAME` | Frappe site name, e.g. `facility.example.org` |
-| `DOMAIN` | public hostname for HTTPS (usually the same as `SITE_NAME`) |
 | `ADMIN_PASSWORD` | Administrator password (used when the site is first created) |
 | `DB_ROOT_PASSWORD` | MariaDB root password (long, random; never reused) |
 | `BACKUP_S3_BUCKET` | backup bucket name (empty = backups stay on the instance) |
@@ -75,6 +77,9 @@ every deploy waits for an approval. Add:
 
 | Variable | Default |
 |---|---|
+| `SITE_NAME` | `spice-facility-dev.labsplatform.com` (Frappe site name) |
+| `DOMAIN` | `spice-facility-dev.labsplatform.com` (bare host = HTTPS; `http://host` = plain HTTP) |
+| `SITE_URL` | `https://spice-facility-dev.labsplatform.com` (link shown on the deploy) |
 | `DEPLOY_PATH` | `/home/ubuntu/spice_next_facility` |
 | `AWS_DEFAULT_REGION` | `ap-south-1` |
 
@@ -91,7 +96,7 @@ Push to `main` (or run the workflow manually from `main`). The deploy job:
    `/api/method/ping` (a first deploy creates the site and installs ERPNext, Health, frappe_theme and
    spice_facility — allow ~10 minutes) → on failure, roll back to the last healthy tag.
 
-Then open `https://<DOMAIN>`, log in as Administrator and complete the **ERPNext setup wizard** (company,
+Then open https://spice-facility-dev.labsplatform.com, log in as Administrator and complete the **ERPNext setup wizard** (company,
 currency, fiscal year). Health's masters (departments, practitioners, service units) come next; demo data
 can be loaded with `bench --site <SITE_NAME> execute spice_facility.demo.seed.run` (non-production only).
 

@@ -5,11 +5,12 @@
 # back automatically when the new build is not healthy.
 #
 #   pull_request  -> checks + build + test            (nothing pushed, nothing deployed)
-#   push to main  -> checks + build + test + push (sha-<commit>, latest) + deploy to production
+#   push to main  -> checks + build + test + push (sha-<commit>, latest) + deploy to dev (spice-facility-dev.labsplatform.com)
 #   tag v*.*.*    -> checks + build + test + push (version tag)        (no deploy)
 #   manual run    -> same as push, with app refs selectable; deploys only from main
 #
-# Required GitHub "production" environment secrets: see docs/deployment/aws-ec2.md.
+# Deploys to the GitHub "dev" environment (http(s)://spice-facility-dev.labsplatform.com).
+# Required environment variables and secrets: see docs/deployment/aws-ec2.md.
 name: Build, test, publish and deploy
 
 on:
@@ -176,13 +177,15 @@ jobs:
           cache-from: type=gha
 
   deploy:
-    name: Deploy to AWS EC2
+    name: Deploy to AWS EC2 (dev)
     needs: build-test-publish
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    environment: production
+    environment:
+      name: dev
+      url: ${{ vars.SITE_URL || 'https://spice-facility-dev.labsplatform.com' }}
     concurrency:
-      group: deploy-production
+      group: deploy-dev
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -204,8 +207,9 @@ jobs:
           # Passed via `envs:` so secret values never appear as literal text in the remote script.
           IMAGE_TAG: ${{ needs.build-test-publish.outputs.tag }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
-          SITE_NAME: ${{ secrets.SITE_NAME }}
-          DOMAIN: ${{ secrets.DOMAIN }}
+          # Not secret: environment variables, with the dev hostname as the default.
+          SITE_NAME: ${{ vars.SITE_NAME || 'spice-facility-dev.labsplatform.com' }}
+          DOMAIN: ${{ vars.DOMAIN || 'spice-facility-dev.labsplatform.com' }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}

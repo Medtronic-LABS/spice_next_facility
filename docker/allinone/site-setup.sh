@@ -55,7 +55,12 @@ for app in ${APPS}; do
 done
 
 if [ -n "${DOMAIN:-}" ]; then
-	bench --site "${SITE_NAME}" set-config host_name "https://${DOMAIN}"
+	# DOMAIN may carry an explicit scheme (http://host serves plain HTTP); otherwise Caddy serves HTTPS.
+	case "${DOMAIN}" in
+		http://*|https://*) HOST_URL="${DOMAIN}" ;;
+		*) HOST_URL="https://${DOMAIN}" ;;
+	esac
+	bench --site "${SITE_NAME}" set-config host_name "${HOST_URL}"
 fi
 
 echo "[site-setup] migrating"

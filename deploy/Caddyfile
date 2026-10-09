@@ -1,6 +1,8 @@
-# Public entry point. With DOMAIN set to a real hostname whose DNS points at this EC2 instance, Caddy
-# obtains and renews a Let's Encrypt certificate automatically; with DOMAIN unset it serves plain HTTP
-# on :80 (first boot / before DNS exists).
+# Public entry point.
+#   DOMAIN=spice-facility-dev.labsplatform.com          HTTPS via Let's Encrypt (auto-renewed); http:// redirects to https://
+#   DOMAIN=http://spice-facility-dev.labsplatform.com   plain HTTP only (e.g. TLS terminated by an ALB in front)
+#   DOMAIN unset                                        plain HTTP on :80 for any host (first boot, before DNS exists)
+# Let's Encrypt needs the DNS A record to point at this instance and ports 80 + 443 open.
 {$DOMAIN} {
 	encode gzip
 
