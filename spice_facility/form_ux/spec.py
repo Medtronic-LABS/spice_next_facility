@@ -55,6 +55,7 @@ NOT_CANCELLED = [["docstatus", "!=", 2]]
 
 # Custom HTML Block name -> mount key understood by public/js/form_ux.js and api/form_summary.py
 HTML_BLOCKS = {
+	"SF AI Summary": "ai_summary",
 	"SF Patient Header": "patient_header",
 	"SF Vitals Trend": "vitals_trend",
 	"SF Encounter History": "encounter_history",
@@ -71,6 +72,7 @@ HTML_BLOCKS = {
 
 FORMS = {
 	"Patient": [
+		html("sf_ai_summary", "SF AI Summary", "AI summary"),
 		html("sf_patient_header", "SF Patient Header", "Clinical summary"),
 		row(
 			card("sf_card_encounters", "SF Patient Encounters", "Encounters", "Patient Encounter", "patient", SUBMITTED),
@@ -97,6 +99,7 @@ FORMS = {
 		       col("status", "Status", "Select"), col("disposition", "Disposition", "Select")]),
 	],
 	"Patient Encounter": [
+		html("sf_ai_summary", "SF AI Summary", "AI summary"),
 		html("sf_encounter_history", "SF Encounter History", "Patient history"),
 		html("sf_vitals_trend", "SF Vitals Trend", "Vitals trend"),
 		table("sf_tbl_service_requests", "Orders from this encounter", "Service Request", "order_group",
@@ -110,6 +113,7 @@ FORMS = {
 		      crud=("read", "create")),
 	],
 	"Inpatient Record": [
+		html("sf_ai_summary", "SF AI Summary", "AI summary"),
 		html("sf_inpatient_stay", "SF Inpatient Stay", "Stay"),
 		row(
 			card("sf_card_vitals", "SF Admission Vitals Recorded", "Vitals recorded", "Vital Signs", "inpatient_record", SUBMITTED),
@@ -144,6 +148,7 @@ FORMS = {
 		      [col("encounter_date", "Date", "Date"), col("patient_name", "Patient", "Data", 3), col("status", "Status", "Select")]),
 	],
 	"Emergency Record": [
+		html("sf_ai_summary", "SF AI Summary", "AI summary"),
 		html("sf_emergency_triage", "SF Emergency Triage", "Triage & timers"),
 		table("sf_tbl_vitals", "Observations", "Observation", "reference_docname",
 		      [col("observation_template", "Observation", "Link", 3), col("result_data", "Result"),
@@ -178,6 +183,7 @@ FORMS = {
 		      connection="Referenced", dt_reference_field="reference_doctype", dn_reference_field="reference_docname"),
 	],
 	"Therapy Plan": [
+		html("sf_ai_summary", "SF AI Summary", "AI summary"),
 		html("sf_therapy_progress", "SF Therapy Progress", "Progress"),
 		card("sf_card_sessions", "SF Therapy Sessions Done", "Sessions done", "Therapy Session", "therapy_plan", SUBMITTED),
 		table("sf_tbl_sessions", "Therapy sessions", "Therapy Session", "therapy_plan",

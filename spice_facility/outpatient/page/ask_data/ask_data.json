@@ -1,0 +1,15 @@
+{
+ "doctype": "Page",
+ "name": "ask-data",
+ "page_name": "ask-data",
+ "title": "Ask Data",
+ "module": "Outpatient",
+ "standard": "Yes",
+ "icon": "sparkles",
+ "creation": "2026-10-09 12:00:00.000000",
+ "modified": "2026-10-09 12:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "roles": [],
+ "system_page": 0
+}

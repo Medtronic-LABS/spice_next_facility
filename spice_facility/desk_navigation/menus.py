@@ -33,6 +33,7 @@ MENUS = {
 	"Healthcare": ("house", [
 		link("Home", "Healthcare", "Workspace", "house"),
 		link("Dashboard", "Healthcare", "Dashboard", "chart-column"),
+		link("Ask Data", "ask-data", "Page", "sparkles"),
 		doc("Patient", "user-round"),
 		doc("Patient Appointment", "calendar-days"),
 		doc("Patient Encounter", "stethoscope"),

@@ -1,0 +1,355 @@
+{
+ "doctype": "DocType",
+ "name": "SPICE AI Settings",
+ "module": "Healthcare Setup",
+ "custom": 0,
+ "issingle": 1,
+ "engine": "InnoDB",
+ "creation": "2026-10-09 12:00:00.000000",
+ "modified": "2026-10-09 12:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "field_order": [
+  "providers_tab",
+  "ollama_section",
+  "ollama_enabled",
+  "ollama_url",
+  "ollama_model",
+  "ollama_col",
+  "ollama_keep_alive",
+  "ollama_timeout",
+  "ollama_temperature",
+  "ollama_in_chat",
+  "ollama_status",
+  "claude_section",
+  "claude_enabled",
+  "anthropic_api_key",
+  "claude_model",
+  "claude_col",
+  "anthropic_base_url",
+  "claude_timeout",
+  "claude_in_chat",
+  "claude_status",
+  "openai_section",
+  "openai_enabled",
+  "openai_api_key",
+  "openai_model",
+  "openai_col",
+  "openai_base_url",
+  "openai_timeout",
+  "openai_in_chat",
+  "openai_status",
+  "features_tab",
+  "features_section",
+  "summary_enabled",
+  "chat_enabled",
+  "floating_chat_enabled",
+  "features_col",
+  "summary_provider",
+  "chat_default_provider",
+  "access_section",
+  "allowed_roles",
+  "limits_tab",
+  "limits_section",
+  "max_rows",
+  "max_groups",
+  "limits_col",
+  "max_context_chars",
+  "rate_limit_per_hour"
+ ],
+ "fields": [
+  {
+   "fieldname": "providers_tab",
+   "fieldtype": "Tab Break",
+   "label": "Providers"
+  },
+  {
+   "fieldname": "ollama_section",
+   "fieldtype": "Section Break",
+   "label": "Ollama (local)",
+   "description": "Runs on this server; patient data never leaves it. Used for summaries, record questions and every written answer."
+  },
+  {
+   "fieldname": "ollama_enabled",
+   "fieldtype": "Check",
+   "label": "Enabled",
+   "default": "1"
+  },
+  {
+   "fieldname": "ollama_url",
+   "fieldtype": "Data",
+   "label": "Server URL",
+   "default": "http://ollama:11434",
+   "depends_on": "ollama_enabled"
+  },
+  {
+   "fieldname": "ollama_model",
+   "fieldtype": "Autocomplete",
+   "label": "Model",
+   "default": "llama3.1:8b",
+   "depends_on": "ollama_enabled",
+   "description": "Type a model name, or use \u201cRefresh models\u201d to pick from what this provider offers."
+  },
+  {
+   "fieldname": "ollama_col",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "ollama_keep_alive",
+   "fieldtype": "Data",
+   "label": "Keep model loaded for",
+   "default": "30m",
+   "depends_on": "ollama_enabled",
+   "description": "Avoids the ~90s cold load between requests (Ollama keep_alive)."
+  },
+  {
+   "fieldname": "ollama_timeout",
+   "fieldtype": "Int",
+   "label": "Timeout (seconds)",
+   "default": "300",
+   "depends_on": "ollama_enabled"
+  },
+  {
+   "fieldname": "ollama_temperature",
+   "fieldtype": "Float",
+   "label": "Temperature",
+   "default": "0.1",
+   "precision": "2",
+   "depends_on": "ollama_enabled"
+  },
+  {
+   "fieldname": "ollama_in_chat",
+   "fieldtype": "Check",
+   "label": "Offer in chat",
+   "default": "1",
+   "depends_on": "ollama_enabled"
+  },
+  {
+   "fieldname": "ollama_status",
+   "fieldtype": "HTML",
+   "label": "Status"
+  },
+  {
+   "fieldname": "claude_section",
+   "fieldtype": "Section Break",
+   "label": "Claude (Anthropic)",
+   "collapsible": 1,
+   "description": "Cloud. Receives only the question and table/field names \u2014 never patient data."
+  },
+  {
+   "fieldname": "claude_enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "anthropic_api_key",
+   "fieldtype": "Password",
+   "label": "API key",
+   "depends_on": "claude_enabled",
+   "length": 255
+  },
+  {
+   "fieldname": "claude_model",
+   "fieldtype": "Autocomplete",
+   "label": "Model",
+   "default": "claude-sonnet-5-5",
+   "depends_on": "claude_enabled",
+   "description": "Type a model name, or use \u201cRefresh models\u201d to pick from what this provider offers."
+  },
+  {
+   "fieldname": "claude_col",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "anthropic_base_url",
+   "fieldtype": "Data",
+   "label": "API base URL",
+   "default": "https://api.anthropic.com",
+   "depends_on": "claude_enabled"
+  },
+  {
+   "fieldname": "claude_timeout",
+   "fieldtype": "Int",
+   "label": "Timeout (seconds)",
+   "default": "60",
+   "depends_on": "claude_enabled"
+  },
+  {
+   "fieldname": "claude_in_chat",
+   "fieldtype": "Check",
+   "label": "Offer in chat",
+   "default": "1",
+   "depends_on": "claude_enabled"
+  },
+  {
+   "fieldname": "claude_status",
+   "fieldtype": "HTML",
+   "label": "Status"
+  },
+  {
+   "fieldname": "openai_section",
+   "fieldtype": "Section Break",
+   "label": "OpenAI / OpenAI-compatible",
+   "collapsible": 1,
+   "description": "Cloud (or any OpenAI-compatible endpoint). Receives only the question and table/field names."
+  },
+  {
+   "fieldname": "openai_enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "openai_api_key",
+   "fieldtype": "Password",
+   "label": "API key",
+   "depends_on": "openai_enabled",
+   "length": 255
+  },
+  {
+   "fieldname": "openai_model",
+   "fieldtype": "Autocomplete",
+   "label": "Model",
+   "depends_on": "openai_enabled",
+   "description": "Type a model name, or use \u201cRefresh models\u201d to pick from what this provider offers."
+  },
+  {
+   "fieldname": "openai_col",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "openai_base_url",
+   "fieldtype": "Data",
+   "label": "API base URL",
+   "default": "https://api.openai.com/v1",
+   "depends_on": "openai_enabled"
+  },
+  {
+   "fieldname": "openai_timeout",
+   "fieldtype": "Int",
+   "label": "Timeout (seconds)",
+   "default": "60",
+   "depends_on": "openai_enabled"
+  },
+  {
+   "fieldname": "openai_in_chat",
+   "fieldtype": "Check",
+   "label": "Offer in chat",
+   "default": "1",
+   "depends_on": "openai_enabled"
+  },
+  {
+   "fieldname": "openai_status",
+   "fieldtype": "HTML",
+   "label": "Status"
+  },
+  {
+   "fieldname": "features_tab",
+   "fieldtype": "Tab Break",
+   "label": "Features"
+  },
+  {
+   "fieldname": "features_section",
+   "fieldtype": "Section Break",
+   "label": "Features"
+  },
+  {
+   "fieldname": "summary_enabled",
+   "fieldtype": "Check",
+   "label": "AI summary on forms",
+   "default": "1"
+  },
+  {
+   "fieldname": "chat_enabled",
+   "fieldtype": "Check",
+   "label": "Ask Data page",
+   "default": "1"
+  },
+  {
+   "fieldname": "floating_chat_enabled",
+   "fieldtype": "Check",
+   "label": "Floating chat on every page",
+   "default": "1"
+  },
+  {
+   "fieldname": "features_col",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "summary_provider",
+   "fieldtype": "Select",
+   "label": "Summary provider",
+   "options": "Ollama",
+   "default": "Ollama",
+   "description": "Local providers only: summaries read patient records."
+  },
+  {
+   "fieldname": "chat_default_provider",
+   "fieldtype": "Select",
+   "label": "Default chat provider",
+   "options": "Ollama\nClaude\nOpenAI",
+   "default": "Ollama"
+  },
+  {
+   "fieldname": "access_section",
+   "fieldtype": "Section Break",
+   "label": "Who can use AI"
+  },
+  {
+   "fieldname": "allowed_roles",
+   "fieldtype": "Table MultiSelect",
+   "label": "Allowed roles",
+   "options": "Has Role",
+   "description": "Users with any of these roles see the AI summary and chat."
+  },
+  {
+   "fieldname": "limits_tab",
+   "fieldtype": "Tab Break",
+   "label": "Limits"
+  },
+  {
+   "fieldname": "limits_section",
+   "fieldtype": "Section Break",
+   "label": "Limits"
+  },
+  {
+   "fieldname": "max_rows",
+   "fieldtype": "Int",
+   "label": "Max rows read per question",
+   "default": "5000"
+  },
+  {
+   "fieldname": "max_groups",
+   "fieldtype": "Int",
+   "label": "Max groups / rows returned",
+   "default": "50"
+  },
+  {
+   "fieldname": "limits_col",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "max_context_chars",
+   "fieldtype": "Int",
+   "label": "Max record context (characters)",
+   "default": "12000"
+  },
+  {
+   "fieldname": "rate_limit_per_hour",
+   "fieldtype": "Int",
+   "label": "Questions per user per hour",
+   "default": "60"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

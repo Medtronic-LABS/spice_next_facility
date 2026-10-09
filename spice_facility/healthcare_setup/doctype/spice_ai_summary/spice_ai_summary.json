@@ -1,0 +1,123 @@
+{
+ "doctype": "DocType",
+ "name": "SPICE AI Summary",
+ "module": "Healthcare Setup",
+ "custom": 0,
+ "issingle": 0,
+ "engine": "InnoDB",
+ "creation": "2026-10-09 12:00:00.000000",
+ "modified": "2026-10-09 12:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "field_order": [
+  "reference_doctype",
+  "reference_name",
+  "status",
+  "col_1",
+  "provider",
+  "model",
+  "requested_by",
+  "duration_ms",
+  "context_hash",
+  "output_section",
+  "summary_json",
+  "error"
+ ],
+ "fields": [
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Document type",
+   "options": "DocType",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Document",
+   "options": "reference_doctype",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Queued\nRunning\nReady\nFailed",
+   "default": "Queued",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "col_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "provider",
+   "fieldtype": "Data",
+   "label": "Provider",
+   "read_only": 1
+  },
+  {
+   "fieldname": "model",
+   "fieldtype": "Data",
+   "label": "Model",
+   "read_only": 1
+  },
+  {
+   "fieldname": "requested_by",
+   "fieldtype": "Link",
+   "label": "Requested by",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "duration_ms",
+   "fieldtype": "Int",
+   "label": "Duration (ms)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "context_hash",
+   "fieldtype": "Data",
+   "label": "Context hash",
+   "read_only": 1
+  },
+  {
+   "fieldname": "output_section",
+   "fieldtype": "Section Break",
+   "label": "Output"
+  },
+  {
+   "fieldname": "summary_json",
+   "fieldtype": "JSON",
+   "label": "Summary",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Error",
+   "read_only": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "autoname": "hash",
+ "title_field": "reference_name"
+}

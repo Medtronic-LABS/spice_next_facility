@@ -9,12 +9,16 @@ app_license = "gpl-3.0"
 # frappe_theme renders the `sva_ft` blocks on the Overview tab of Health forms (form_ux/).
 required_apps = ["erpnext", "healthcare", "frappe_theme"]
 
-app_include_css = ["/assets/spice_facility/css/full_width.css"]
+app_include_css = ["/assets/spice_facility/css/full_width.css", "/assets/spice_facility/css/ai.css"]
 
 app_include_js = [
 	"/assets/spice_facility/js/full_width_default.js",
 	"/assets/spice_facility/js/form_ux_strings.js",
 	"/assets/spice_facility/js/form_ux.js",
+	"/assets/spice_facility/js/ai_strings.js",
+	"/assets/spice_facility/js/ai_summary.js",
+	"/assets/spice_facility/js/ask_data/ask_data_view.js",
+	"/assets/spice_facility/js/ask_data/floating_chat.js",
 ]
 
 # frappe_theme sends an empty `{}` filter that breaks every form-scoped Dashboard Chart; see overrides/.

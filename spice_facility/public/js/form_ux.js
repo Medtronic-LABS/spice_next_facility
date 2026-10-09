@@ -323,10 +323,15 @@ frappe.provide("spice_facility.form_ux");
 	};
 
 	// ─── mount ──────────────────────────────────────────────────────────────
+	// Blocks that load their own data (e.g. the AI summary) register here instead of in `renderers`.
+	spice_facility.form_ux.custom_mounts = spice_facility.form_ux.custom_mounts || {};
+	spice_facility.form_ux.helpers = { esc, date, badge, tile, empty, section, link };
+
 	spice_facility.form_ux.mount = async (root, key) => {
 		const host = root.querySelector(".sf-block");
 		const frm = window.cur_frm;
-		if (!host || !frm || !renderers[key]) return;
+		const custom = spice_facility.form_ux.custom_mounts[key];
+		if (!host || !frm || (!renderers[key] && !custom)) return;
 
 		// `root` is the block's ShadowRoot, so the stylesheet is added as a node, not as HTML.
 		if (!root.querySelector(`link[href="${STYLESHEET}"]`)) {
@@ -347,6 +352,7 @@ frappe.provide("spice_facility.form_ux");
 			host.innerHTML = empty(S.common.save_first);
 			return;
 		}
+		if (custom) return custom(host, frm);
 		host.innerHTML = `<div class="sf-muted">${esc(S.common.loading)}</div>`;
 		try {
 			const data = await frappe.xcall(METHOD, { block: key, doctype: frm.doctype, name: frm.doc.name });

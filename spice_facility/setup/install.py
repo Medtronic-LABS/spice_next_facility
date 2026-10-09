@@ -4,6 +4,8 @@ from spice_facility.desk_navigation.apply import apply_navigation, remove_naviga
 from spice_facility.form_ux.apply import apply_form_ux, remove_form_ux
 from spice_facility.setup.fixes import apply_fixes
 
+AI_DEFAULT_ROLES = ("Physician", "Nursing User", "Healthcare Administrator", "System Manager")
+
 APP = "spice_facility"
 
 
@@ -15,12 +17,14 @@ def after_install():
 	apply_fixes()
 	apply_navigation()
 	apply_form_ux()
+	seed_ai_roles()
 
 
 def after_migrate():
 	apply_fixes()
 	apply_navigation()
 	apply_form_ux()
+	seed_ai_roles()
 
 
 def before_uninstall():
@@ -42,3 +46,15 @@ def release_hand_made_modules():
 	remove_navigation()
 	for module in hand_made:
 		frappe.delete_doc("Module Def", module, ignore_permissions=True, force=True)
+
+
+def seed_ai_roles():
+	"""Give the clinical roles access to AI features the first time; never override a site's choice."""
+	settings = frappe.get_single("SPICE AI Settings")
+	if settings.allowed_roles:
+		return
+	for role in AI_DEFAULT_ROLES:
+		if frappe.db.exists("Role", role):
+			settings.append("allowed_roles", {"role": role})
+	settings.flags.ignore_permissions = True
+	settings.save()

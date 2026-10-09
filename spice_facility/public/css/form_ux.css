@@ -88,3 +88,19 @@
 .sf-bed-occupied { border-left: 5px solid var(--red-500); }
 .sf-bed-vacant { border-left: 5px solid var(--green-500); }
 .sf-bed-name { font-weight: 600; margin-bottom: 4px; }
+
+/* AI summary block */
+.sf-ai-card { border: 1px solid var(--purple-200, var(--border-color)); border-radius: var(--border-radius-lg); padding: 12px 16px; background: linear-gradient(135deg, var(--purple-50, var(--fg-color)), var(--fg-color)); }
+.sf-ai-headline { font-size: var(--text-lg); font-weight: 600; margin-bottom: 4px; }
+.sf-ai-text { margin: 6px 0 10px; line-height: 1.5; }
+.sf-ai-alert { padding: 6px 10px; border-radius: var(--border-radius-md); margin: 4px 0; font-size: var(--text-sm); }
+.sf-ai-alert.sf-red { background: var(--red-50, var(--red-100)); color: var(--red-700); border-left: 3px solid var(--red-500); }
+.sf-ai-alert.sf-orange { background: var(--orange-50, var(--orange-100)); color: var(--orange-700); border-left: 3px solid var(--orange-500); }
+.sf-ai-alert.sf-yellow { background: var(--yellow-50, var(--yellow-100)); color: var(--yellow-700); border-left: 3px solid var(--yellow-500); }
+.sf-ai-footer { margin-top: 8px; font-style: italic; }
+.sf-ai-progress { display: flex; align-items: center; gap: 8px; padding: 10px 0; color: var(--text-muted); }
+.sf-ai-spinner { width: 14px; height: 14px; border: 2px solid var(--gray-300); border-top-color: var(--primary); border-radius: 50%; animation: sf-spin 0.8s linear infinite; }
+.sf-banner.sf-orange { background: var(--orange-100); color: var(--orange-700); }
+@keyframes sf-spin { to { transform: rotate(360deg); } }
+
+.sf-ai-actions { display: flex; justify-content: flex-end; margin-bottom: 6px; }
