@@ -1,9 +1,17 @@
 # Deploying spice_next_facility on AWS EC2
 
-**Dev environment:** `spice-facility-dev.labsplatform.com` (GitHub environment `dev`). `http://` redirects to
-`https://` once the certificate is issued.
+| Branch | GitHub environment | URL | EC2 |
+|---|---|---|---|
+| `develop` | `dev` | https://spice-facility-dev.labsplatform.com | its own instance |
+| `training` | `training` | https://spice-facility-training.labsplatform.com | its own instance |
+| `main`, tags `v*` | — | build, test and publish only | — |
 
-One EC2 instance runs three containers (`deploy/docker-compose.yml`):
+`http://` redirects to `https://` once Caddy has the certificate.
+
+**Branch flow:** feature branch → PR into `develop` (tests run) → merge = deploy to dev → PR `develop` →
+`training` → merge = deploy to training → PR `training` → `main` for a release (tag `vX.Y.Z` to version it).
+
+Each EC2 instance runs three containers (`deploy/docker-compose.yml`):
 
 | Container | What | Exposed |
 |---|---|---|
@@ -11,10 +19,24 @@ One EC2 instance runs three containers (`deploy/docker-compose.yml`):
 | `app` | all-in-one image: gunicorn, socket.io, workers (incl. a dedicated AI `long` worker), scheduler, Redis, daily backup | 127.0.0.1:8000 only |
 | `mariadb` | MariaDB 10.6, data on the instance's EBS volume | not exposed |
 
-The pipeline (`.github/workflows/docker-publish.yml`) builds the image from pinned app refs, **runs the
-test suite inside that exact image against MariaDB**, pushes it to
-`ghcr.io/medtronic-labs/spice_next_facility`, and — on `main` only — deploys it over SSH with an automatic
-rollback to the last healthy build if the new one does not come up.
+The pipeline (`.github/workflows/docker-publish.yml`) **runs the test suite inside the exact image against
+MariaDB** before publishing it to `ghcr.io/medtronic-labs/spice_next_facility`, then deploys it over SSH
+with an automatic rollback to the last healthy build if the new one does not come up.
+
+### Images: a reusable base + a thin app layer
+
+| Image | Contents | Rebuilt when |
+|---|---|---|
+| `spice_next_facility-base:<key>` | bench, Frappe, ERPNext, Frappe Health, frappe_theme, assets built | `docker/base/versions.env` or `docker/base/Dockerfile` changes |
+| `spice_next_facility:<tag>` | the base + `spice_facility` | every push |
+
+A push that changes only `spice_facility` reuses the base (the base job is a no-op), builds a few small
+layers, and the EC2 pulls only those. The base is pulled once per version bump and cached on each host.
+
+**Upgrading Frappe / ERPNext / Health / frappe_theme:** edit the release tags in
+`docker/base/versions.env` (bump `BASE_REVISION` to force a rebuild without a version change), open a PR
+into `develop`, merge. That run builds the new base once (~30 min), every later run reuses it. Run the
+workflow manually with **rebuild_base** to rebuild it on demand.
 
 No local AI model runs here (`SPICE_AI_OLLAMA_ENABLED=0`): AI summaries are off; Ask Data works with
 Claude or OpenAI, which see only the question and field names, and answers are written from the results.
@@ -22,6 +44,8 @@ Claude or OpenAI, which see only the question and field names, and answers are w
 ---
 
 ## 1. AWS resources (once)
+
+Do this **once per environment** (dev and training each get their own instance, DNS record and secrets).
 
 1. **EC2 instance** — Ubuntu 24.04 LTS, `t3.xlarge` (4 vCPU / 16 GB) recommended for ERPNext + Health +
    MariaDB on one host (`t3.large` / 8 GB works for a small pilot). **EBS gp3, 60 GB** or more.
@@ -37,8 +61,9 @@ Claude or OpenAI, which see only the question and field names, and answers are w
    job uses it through the instance metadata service — no AWS keys are stored anywhere. Containers sit on
    a Docker bridge, so set the metadata hop limit to 2:
    `aws ec2 modify-instance-metadata-options --instance-id <id> --http-put-response-hop-limit 2 --http-tokens required`
-6. **DNS**: an `A` record `spice-facility-dev.labsplatform.com` → the Elastic IP (Caddy needs it, plus
-   ports 80/443 open, to obtain the Let's Encrypt certificate).
+6. **DNS**: an `A` record per environment → that instance's Elastic IP:
+   `spice-facility-dev.labsplatform.com` (dev) and `spice-facility-training.labsplatform.com` (training).
+   Caddy needs it, plus ports 80/443 open, to obtain the Let's Encrypt certificate.
 
 ## 2. Prepare the instance (once)
 
@@ -54,8 +79,9 @@ Create a **deploy key pair** for GitHub (`ssh-keygen -t ed25519 -f deploy_key -N
 
 Repository: `Medtronic-LABS/spice_next_facility` (this app's source, Python package `spice_facility`).
 
-Create an environment **`dev`** (Settings → Environments; already created with its variables). Optionally add
-required reviewers so every deploy waits for an approval. Add:
+Environments **`dev`** and **`training`** exist with their variables already set (Settings → Environments).
+Optionally add required reviewers (e.g. on `training`) so a deploy waits for approval. Add these
+**to each environment**, with that environment's instance and passwords:
 
 **Secrets**
 
@@ -75,11 +101,11 @@ required reviewers so every deploy waits for an approval. Add:
 
 **Variables**
 
-| Variable | Default |
-|---|---|
-| `SITE_NAME` | `spice-facility-dev.labsplatform.com` (Frappe site name) |
-| `DOMAIN` | `spice-facility-dev.labsplatform.com` (bare host = HTTPS; `http://host` = plain HTTP) |
-| `SITE_URL` | `https://spice-facility-dev.labsplatform.com` (link shown on the deploy) |
+| Variable | dev | training |
+|---|---|---|
+| `SITE_NAME` (Frappe site name) | `spice-facility-dev.labsplatform.com` | `spice-facility-training.labsplatform.com` |
+| `DOMAIN` (bare host = HTTPS; `http://host` = plain HTTP) | same as `SITE_NAME` | same as `SITE_NAME` |
+| `SITE_URL` (link shown on the deploy) | `https://spice-facility-dev.labsplatform.com` | `https://spice-facility-training.labsplatform.com` |
 | `DEPLOY_PATH` | `/home/ubuntu/spice_next_facility` |
 | `AWS_DEFAULT_REGION` | `ap-south-1` |
 
@@ -88,7 +114,7 @@ for publishing.
 
 ## 4. First deploy
 
-Push to `main` (or run the workflow manually from `main`). The deploy job:
+Push to `develop` (dev) or `training` (training), or run the workflow manually on that branch. The deploy job:
 
 1. copies `docker-compose.yml`, `Caddyfile`, `deploy.sh` to `DEPLOY_PATH`,
 2. writes `.env` from the secrets (CI-owned; do not edit it on the host),
@@ -96,7 +122,7 @@ Push to `main` (or run the workflow manually from `main`). The deploy job:
    `/api/method/ping` (a first deploy creates the site and installs ERPNext, Health, frappe_theme and
    spice_facility — allow ~10 minutes) → on failure, roll back to the last healthy tag.
 
-Then open https://spice-facility-dev.labsplatform.com, log in as Administrator and complete the **ERPNext setup wizard** (company,
+Then open the environment's URL, log in as Administrator and complete the **ERPNext setup wizard** (company,
 currency, fiscal year). Health's masters (departments, practitioners, service units) come next; demo data
 can be loaded with `bench --site <SITE_NAME> execute spice_facility.demo.seed.run` (non-production only).
 
@@ -105,9 +131,8 @@ To use Ask Data with Claude/OpenAI, open **SPICE AI Settings**, enable the provi
 
 ## 5. Every later deploy
 
-Merge to `main`. Tests must pass before an image is pushed; `site-setup` runs `bench migrate` on start
-(single instance, so there is no migration race). Tag `vX.Y.Z` to publish a versioned image without
-deploying it.
+Merge to `develop` / `training`. Tests must pass before an image is pushed; `site-setup` runs
+`bench migrate` on start (single instance, so there is no migration race).
 
 Run a specific earlier build: re-run the deploy job of that commit's workflow run, or on the host set
 `IMAGE_TAG=sha-<commit>` in `.env` and run `./deploy.sh`.
