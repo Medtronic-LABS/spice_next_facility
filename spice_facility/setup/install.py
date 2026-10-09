@@ -1,6 +1,7 @@
 import frappe
 
 from spice_facility.desk_navigation.apply import apply_navigation, remove_navigation
+from spice_facility.form_ux.apply import apply_form_ux, remove_form_ux
 from spice_facility.setup.fixes import apply_fixes
 
 APP = "spice_facility"
@@ -13,16 +14,19 @@ def before_install():
 def after_install():
 	apply_fixes()
 	apply_navigation()
+	apply_form_ux()
 
 
 def after_migrate():
 	apply_fixes()
 	apply_navigation()
+	apply_form_ux()
 
 
 def before_uninstall():
 	# Uninstalling deletes every record in this app's modules, which would include Health's
 	# dashboards while they sit in them.
+	remove_form_ux()
 	remove_navigation()
 
 

@@ -1,6 +1,6 @@
 ## SPICE Facility
 
-Facility (hospital) layer for SPICE on top of **Frappe Health** (`healthcare`, github.com/frappe/health) and ERPNext, Frappe v16.
+Facility (hospital) layer for SPICE on top of **Frappe Health** (`healthcare`, github.com/frappe/health), ERPNext and frappe_theme, Frappe v16.
 
 ### What it does
 
@@ -10,6 +10,9 @@ Facility (hospital) layer for SPICE on top of **Frappe Health** (`healthcare`, g
 | Full Width desk layout as the default for every user | `public/js/full_width_default.js` | every desk load |
 | Health v16 fix: Lab Test history config types `lab_test_comment` as Table (it is Text), which crashes submitting a commented Lab Test | `setup/fixes.py` | install + every `bench migrate` |
 | Demo data across every Health module | `demo/seed.py` | only when run explicitly |
+| **Overview tab** on 13 Health forms — related-record tables, number cards, charts and clinical summaries via frappe_theme `sva_ft` | `form_ux/` (spec → apply), `api/form_summary.py`, `public/js/form_ux*.js`, `public/css/form_ux.css` | install + every `bench migrate` |
+| Missing / broken Connections (e.g. Patient → Emergency Record, Practitioner → Inpatient Record on `primary_practitioner`) | `form_ux/connections.py` | install + every `bench migrate` |
+| frappe_theme fix: form-scoped Dashboard Charts break on the `{}` filter frappe_theme always sends | `overrides/frappe_theme.py` (`override_whitelisted_methods`) | always |
 
 #### Navigation model (Frappe 16.5x)
 
@@ -20,6 +23,24 @@ area's dashboard workspace into it, and marks the menu that owns each Health doc
 (`is_default_module`). The menus are site-layer `Sidebar` rows (`standard=0`) and the site layer of the
 `healthcare` `Dock`, so nothing in the Health app is edited. Uninstalling moves the dashboards back to
 the `Healthcare` module first.
+
+#### Overview tab (frappe_theme `sva_ft`)
+
+Each form in `form_ux/spec.py` gets a first **Overview** tab built from four block kinds, each an HTML
+custom field (`sf_*`) carrying an `sva_ft` Property Setter:
+
+| Kind | Renders | Notes |
+|---|---|---|
+| `table` | connected-doctype table (Direct / Indirect / Referenced) | always `redirect_to_main_form`, which also keeps the linked doctype's own form editable |
+| `card` | Number Card (Count) | frappe_theme scopes it to the open record; apply refuses a source doctype it cannot scope cleanly |
+| `chart` | Dashboard Chart (Count time series) | Group By is not offered — frappe_theme splices the filter object into the query |
+| `html` | Custom HTML Block → `spice_facility.form_ux.mount()` | data from `api/form_summary.get_block` (permission-checked, capped) |
+
+Forms covered: Patient, Patient Encounter, Inpatient Record, Healthcare Practitioner, Emergency Record,
+Lab Test, Observation, Diagnostic Report, Sample Collection, Therapy Plan, Patient Insurance Policy,
+Insurance Claim, Healthcare Service Unit. A `field_order` Property Setter keeps Overview first, and forms
+without a dashboard tab get a trailing **Connections** tab. Health v16's Insurance Claim declares two
+fields twice, so custom-field validation is skipped for it only while that defect exists.
 
 ### Install
 

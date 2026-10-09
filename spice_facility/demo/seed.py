@@ -1446,6 +1446,36 @@ def seed_clinical_notes(p):
 	log("3 OPD clinical notes")
 
 
+def seed_trend_history(p):
+	"""Earlier readings and results so the Overview tab's trends and comparisons have a story to show."""
+	if frappe.db.count("Vital Signs", {"patient": p["ramesh"]}) < 2:
+		for day, sys_, dia, pulse in ((-120, 164, 102, 92), (-90, 158, 98, 88), (-60, 154, 96, 86)):
+			vitals(p["ramesh"], d(day), "09:30:00", bp_systolic=str(sys_), bp_diastolic=str(dia), pulse=str(pulse),
+			       temperature="98.4", respiratory_rate="16", height=1.70, weight=84 - (day + 120) / 60)
+		vitals(p["ramesh"], d(0), "09:55:00", bp_systolic="138", bp_diastolic="86", pulse="78",
+		       temperature="98.2", respiratory_rate="15", height=1.70, weight=80.5)
+
+	ip = frappe.db.get_value("Inpatient Record", {"patient": p["rajesh"]})
+	if ip and not frappe.db.exists("Vital Signs", {"inpatient_record": ip}):
+		for day, time, temp, pulse, rr in ((-2, "18:00:00", "101.8", "110", "26"), (-1, "08:00:00", "100.6", "102", "22"),
+		                                   (-1, "20:00:00", "99.4", "94", "20"), (0, "08:00:00", "98.6", "86", "18")):
+			doc = vitals(p["rajesh"], d(day), time, temperature=temp, pulse=pulse, respiratory_rate=rr,
+			             bp_systolic="118", bp_diastolic="76")
+			doc.db_set("inpatient_record", ip)
+
+	if frappe.db.count("Lab Test", {"patient": p["lakshmi"], "template": "Complete Blood Count"}) < 2:
+		lt = frappe.get_doc({"doctype": "Lab Test", "template": "Complete Blood Count", "patient": p["lakshmi"],
+		                     "company": COMPANY, "date": d(-120), "patient_sex": "Female"})
+		lt.insert(ignore_permissions=True)
+		for row in lt.normal_test_items:
+			row.result_value = {"Haemoglobin": "8.1", "Total WBC Count": "5600", "Platelet Count": "3.4",
+			                    "RBC Count": "3.2"}.get(row.lab_test_event or row.lab_test_name, "")
+		lt.lab_test_comment = "Microcytic anaemia; started oral iron"
+		lt.save(ignore_permissions=True)
+		lt.submit()
+	log("vitals history (Ramesh, Rajesh's stay) and an earlier CBC for Lakshmi")
+
+
 def seed_phase2(p, dr, units, meds, labs, procs, schedule):
 	section("Terminology (ICD-10 / LOINC / SNOMED)", seed_terminology)
 	section("Clinical vocabulary & masters", seed_more_vocab)
@@ -1470,6 +1500,7 @@ def seed_phase2(p, dr, units, meds, labs, procs, schedule):
 	section("  emergency", story_emergency, p, all_dr, extra, units)
 	section("  treatment counselling", story_treatment_counselling, all_dr, units, meds)
 	section("  clinical notes", seed_clinical_notes, p)
+	section("  trend history", seed_trend_history, p)
 
 
 def run(company=None):
