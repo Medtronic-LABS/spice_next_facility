@@ -1,75 +1,22 @@
-# All-in-one production image for spice_next_facility: bench (Frappe + ERPNext + Frappe Health +
-# frappe_theme + spice_facility) + Redis, all run as supervised processes in one container. MariaDB runs
-# beside it in its own container (deploy/docker-compose.yml). Built, tested and pushed to GHCR by
-# .github/workflows/docker-publish.yml; modelled on frappe_uhis's docker/allinone image.
-#
-# The app checkouts under apps/ are made by the workflow at pinned refs (no `bench get-app` at build
-# time): what CI tested is exactly what ships.
-FROM frappe/bench:latest
-
-USER root
-
-ARG FRAPPE_BRANCH=version-16
-ENV PATH="/home/frappe/.local/bin:${PATH}"
-
-# mariadb-client: wait for the DB and `bench backup`; awscli: off-box backups to S3.
-RUN apt-get update \
-	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-		mariadb-client \
-		redis-server \
-		supervisor \
-		awscli \
-		curl \
-	&& rm -rf /var/lib/apt/lists/* \
-	&& mkdir -p /var/log/supervisor \
-	&& chown -R frappe:frappe /var/log/supervisor
+# App image: spice_facility on top of the reusable base (docker/base/). The base already holds bench,
+# Frappe, ERPNext, Frappe Health and frappe_theme with assets built, so this adds only a few small layers:
+# a push that changes only spice_facility rebuilds in minutes and EC2 pulls megabytes, not gigabytes.
+# Built, tested and pushed by .github/workflows/docker-publish.yml, which passes BASE_IMAGE.
+ARG BASE_IMAGE=ghcr.io/medtronic-labs/spice_next_facility-base:local
+FROM ${BASE_IMAGE}
 
 USER frappe
-WORKDIR /home/frappe
-
-RUN command -v bench >/dev/null 2>&1 || pip3 install --user --break-system-packages frappe-bench
-
-RUN bench init --frappe-branch "${FRAPPE_BRANCH}" --python python3 \
-	--skip-redis-config-generation --no-backups frappe-bench
-
 WORKDIR /home/frappe/frappe-bench
 
-# Dependency order: erpnext -> healthcare (requires erpnext) -> frappe_theme -> spice_facility
-# (requires all three).
-COPY --chown=frappe:frappe apps/erpnext        apps/erpnext
-COPY --chown=frappe:frappe apps/healthcare     apps/healthcare
-COPY --chown=frappe:frappe apps/frappe_theme   apps/frappe_theme
 COPY --chown=frappe:frappe apps/spice_facility apps/spice_facility
 
-# COPYing source skips the `yarn install` that `bench get-app` would run; do it for every app that has
-# frontend dependencies, or `bench build` cannot resolve their imports.
-RUN for app in erpnext healthcare frappe_theme spice_facility; do \
-		if [ -f "apps/${app}/package.json" ]; then yarn --cwd "apps/${app}" install --check-files; fi; \
-	done
+# --no-deps: spice_facility adds no Python dependencies beyond what the base installed.
+RUN ./env/bin/pip install --no-cache-dir --no-deps -e ./apps/spice_facility \
+	&& printf 'frappe\nerpnext\nhealthcare\nfrappe_theme\nspice_facility\n' > sites/apps.txt \
+	&& bench build --app spice_facility
 
-# sites/apps.txt is rewritten whole: `bench init` leaves it without a trailing newline, so appending
-# would glue two app names together.
-RUN ./env/bin/pip install --no-cache-dir \
-		-e ./apps/erpnext \
-		-e ./apps/healthcare \
-		-e ./apps/frappe_theme \
-		-e ./apps/spice_facility \
-	&& printf 'frappe\nerpnext\nhealthcare\nfrappe_theme\nspice_facility\n' > sites/apps.txt
-
-# Build-time stub so `bench build` runs without a database; entrypoint.sh rewrites it on every boot.
-RUN cat > sites/common_site_config.json <<'JSON'
-{
-  "redis_cache": "redis://127.0.0.1:6379/0",
-  "redis_queue": "redis://127.0.0.1:6379/1",
-  "redis_socketio": "redis://127.0.0.1:6379/2",
-  "socketio_port": 9000
-}
-JSON
-
-RUN bench build
-
-# sites/ is a volume at runtime and shadows what was baked there: keep generated files outside it so
-# entrypoint.sh can put them back on every boot.
+# sites/ is a volume at runtime and shadows what was baked there: keep the generated files outside it so
+# the entrypoint can put them back on every boot.
 RUN mkdir -p /home/frappe/sites-seed \
 	&& cp sites/apps.txt  /home/frappe/sites-seed/apps.txt \
 	&& cp sites/apps.json /home/frappe/sites-seed/apps.json \
@@ -86,9 +33,8 @@ COPY apps/spice_facility/docker/allinone/redis.conf       /home/frappe/redis.con
 COPY apps/spice_facility/docker/allinone/wsgi.py          /home/frappe/frappe-bench/wsgi.py
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/site-setup.sh /usr/local/bin/wait-for-site.sh \
 		/usr/local/bin/run-backend.sh /usr/local/bin/backup.sh \
-	&& mkdir -p /home/frappe/.redis \
-	&& chown -R frappe:frappe /home/frappe/frappe-bench /home/frappe/sites-seed /home/frappe/.redis \
-		/home/frappe/redis.conf
+	&& chown frappe:frappe /home/frappe/redis.conf /home/frappe/frappe-bench/wsgi.py \
+	&& chown -R frappe:frappe /home/frappe/sites-seed
 
 EXPOSE 8000 9000
 

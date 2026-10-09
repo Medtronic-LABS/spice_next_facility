@@ -1,0 +1,13 @@
+# Local trial of the production stack (deploy/local-test.sh layers this on docker-compose.yml): the same
+# images, Caddyfile and site setup as EC2, on spare ports (a dev bench usually holds 8000) and plain HTTP.
+services:
+  app:
+    container_name: spice-next-facility-local
+    env_file: !override
+      - .env.local
+    ports: !override
+      - "127.0.0.1:${LOCAL_APP_PORT:-18000}:8000"
+
+  caddy:
+    ports: !override
+      - "${LOCAL_PORT:-8088}:80"

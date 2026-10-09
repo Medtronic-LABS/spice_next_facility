@@ -56,4 +56,5 @@ jspm_packages/
 
 # deployment secrets (written by CI on the host)
 deploy/.env
+deploy/.env.local
 .env

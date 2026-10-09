@@ -1,38 +1,34 @@
-# Build, test, publish and deploy spice_next_facility (Frappe Health + ERPNext + frappe_theme +
-# spice_facility) as one all-in-one image (docker/allinone/), then roll it out to an AWS EC2 host over
-# SSH (deploy/). Modelled on frappe_uhis's docker-publish.yml, with two additions: the image is tested
-# (bench run-tests inside the exact image, against MariaDB) before it is pushed, and the deploy rolls
-# back automatically when the new build is not healthy.
+# Build, test, publish and deploy spice_next_facility.
 #
-#   pull_request  -> checks + build + test            (nothing pushed, nothing deployed)
-#   push to main  -> checks + build + test + push (sha-<commit>, latest) + deploy to dev (spice-facility-dev.labsplatform.com)
-#   tag v*.*.*    -> checks + build + test + push (version tag)        (no deploy)
-#   manual run    -> same as push, with app refs selectable; deploys only from main
+# Two images (docker/):
+#   base  ghcr.io/medtronic-labs/spice_next_facility-base:<key>  bench + Frappe + ERPNext + Frappe Health +
+#         frappe_theme at the tags pinned in docker/base/versions.env. <key> hashes versions.env and the base
+#         Dockerfile, so it is rebuilt only when one of them changes; otherwise the job is a no-op.
+#   app   ghcr.io/medtronic-labs/spice_next_facility:<tags>       spice_facility on top of the base: a push that
+#         changes only this app builds a few small layers, and EC2 pulls megabytes.
 #
-# Deploys to the GitHub "dev" environment (http(s)://spice-facility-dev.labsplatform.com).
-# Required environment variables and secrets: see docs/deployment/aws-ec2.md.
+#   pull_request     -> checks, ensure base, build + test app            (nothing published or deployed)
+#   push develop     -> ... + publish sha-<commit>, develop  + deploy to environment "dev"
+#   push training    -> ... + publish sha-<commit>, training + deploy to environment "training"
+#   push main / v*   -> ... + publish sha-<commit>, main/latest / version (no deploy)
+#   manual run       -> same as a push of the chosen branch; `rebuild_base` forces a base rebuild
+#
+# Each GitHub environment ("dev", "training") holds its own variables (SITE_NAME, DOMAIN, SITE_URL) and
+# secrets (one EC2 host each). See docs/deployment/aws-ec2.md.
 name: Build, test, publish and deploy
 
 on:
   push:
-    branches: [main]
+    branches: [develop, training, main]
     tags: ["v*.*.*"]
   pull_request:
-    branches: [main]
+    branches: [develop, training, main]
   workflow_dispatch:
     inputs:
-      frappe_branch:
-        description: Frappe branch for `bench init`
-        default: version-16
-      erpnext_ref:
-        description: ERPNext git ref
-        default: version-16
-      healthcare_ref:
-        description: Frappe Health git ref
-        default: version-16
-      frappe_theme_ref:
-        description: frappe_theme git ref
-        default: development
+      rebuild_base:
+        description: Rebuild the base image even if its key exists
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,8 +42,8 @@ env:
   REGISTRY: ghcr.io
   # GHCR paths must be lowercase; the org's GitHub casing is Medtronic-LABS.
   IMAGE_NAME: medtronic-labs/spice_next_facility
+  BASE_IMAGE_NAME: medtronic-labs/spice_next_facility-base
   CI_IMAGE: spice_next_facility:ci
-  FRAPPE_BRANCH: ${{ inputs.frappe_branch || 'version-16' }}
 
 jobs:
   checks:
@@ -73,33 +69,73 @@ jobs:
           cp .env.example .env
           docker compose -f docker-compose.yml config --quiet
 
-  build-test-publish:
-    name: Build, test, publish image
+  base:
+    name: Ensure base image
     needs: checks
     runs-on: ubuntu-latest
     timeout-minutes: 90
     outputs:
+      image: ${{ steps.key.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: docker/base
+
+      - name: Base image key (hash of the pins and the Dockerfile)
+        id: key
+        run: |
+          key=$(cat docker/base/versions.env docker/base/Dockerfile | sha256sum | cut -c1-12)
+          echo "image=${REGISTRY}/${BASE_IMAGE_NAME}:${key}" >> "$GITHUB_OUTPUT"
+          grep -E '^[A-Z_]+=' docker/base/versions.env >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Is it already published?
+        id: exists
+        env:
+          IMAGE: ${{ steps.key.outputs.image }}
+          FORCE: ${{ inputs.rebuild_base }}
+        run: |
+          if [ "${FORCE}" != "true" ] && docker manifest inspect "${IMAGE}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "Reusing ${IMAGE}"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.exists.outputs.found != 'true'
+
+      - name: Build and push base
+        if: steps.exists.outputs.found != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/base
+          file: docker/base/Dockerfile
+          build-args: |
+            BENCH_IMAGE=${{ env.BENCH_IMAGE }}
+            FRAPPE_REF=${{ env.FRAPPE_REF }}
+            ERPNEXT_REF=${{ env.ERPNEXT_REF }}
+            HEALTHCARE_REF=${{ env.HEALTHCARE_REF }}
+            FRAPPE_THEME_REF=${{ env.FRAPPE_THEME_REF }}
+          push: true
+          tags: ${{ steps.key.outputs.image }}
+          cache-from: type=gha,scope=base
+          cache-to: type=gha,scope=base,mode=max
+
+  build-test-publish:
+    name: Build, test, publish app image
+    needs: base
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      # Every app is checked out at a pinned ref and COPYed into the image: what is tested is what ships.
-      - name: Checkout ERPNext
-        uses: actions/checkout@v4
-        with:
-          repository: frappe/erpnext
-          ref: ${{ inputs.erpnext_ref || 'version-16' }}
-          path: apps/erpnext
-      - name: Checkout Frappe Health
-        uses: actions/checkout@v4
-        with:
-          repository: frappe/health
-          ref: ${{ inputs.healthcare_ref || 'version-16' }}
-          path: apps/healthcare
-      - name: Checkout frappe_theme
-        uses: actions/checkout@v4
-        with:
-          repository: Suvaidyam/frappe_theme
-          ref: ${{ inputs.frappe_theme_ref || 'development' }}
-          path: apps/frappe_theme
       - name: Checkout spice_facility
         uses: actions/checkout@v4
         with:
@@ -111,16 +147,16 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build image (local, for tests)
+      - name: Build app image (local, for tests)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: apps/spice_facility/docker/allinone/Dockerfile
-          build-args: FRAPPE_BRANCH=${{ env.FRAPPE_BRANCH }}
+          build-args: BASE_IMAGE=${{ needs.base.outputs.image }}
           load: true
           tags: ${{ env.CI_IMAGE }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,scope=app,mode=max
 
       - name: Test inside the image (site setup + bench run-tests)
         run: |
@@ -161,34 +197,55 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ steps.tag.outputs.tag }}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
 
-      - name: Push image (same build, from cache)
+      - name: Push app image (same build, from cache)
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: apps/spice_facility/docker/allinone/Dockerfile
-          build-args: FRAPPE_BRANCH=${{ env.FRAPPE_BRANCH }}
+          build-args: BASE_IMAGE=${{ needs.base.outputs.image }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: type=gha,scope=app
 
   deploy:
-    name: Deploy to AWS EC2 (dev)
+    name: Deploy to ${{ github.ref_name == 'training' && 'training' || 'dev' }}
     needs: build-test-publish
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/training')
     runs-on: ubuntu-latest
     environment:
-      name: dev
-      url: ${{ vars.SITE_URL || 'https://spice-facility-dev.labsplatform.com' }}
+      name: ${{ github.ref_name == 'training' && 'training' || 'dev' }}
+      url: ${{ vars.SITE_URL }}
     concurrency:
-      group: deploy-dev
+      group: deploy-${{ github.ref_name }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+
+      - name: Environment is configured
+        env:
+          ENV_NAME: ${{ github.ref_name == 'training' && 'training' || 'dev' }}
+          HAS_SITE_NAME: ${{ vars.SITE_NAME != '' }}
+          HAS_HOST: ${{ secrets.DEPLOY_HOST != '' }}
+          HAS_KEY: ${{ secrets.DEPLOY_SSH_KEY != '' }}
+          HAS_DB: ${{ secrets.DB_ROOT_PASSWORD != '' }}
+          HAS_ADMIN: ${{ secrets.ADMIN_PASSWORD != '' }}
+        run: |
+          missing=""
+          [ "${HAS_SITE_NAME}" = "true" ] || missing="$missing SITE_NAME(variable)"
+          [ "${HAS_HOST}" = "true" ] || missing="$missing DEPLOY_HOST"
+          [ "${HAS_KEY}" = "true" ] || missing="$missing DEPLOY_SSH_KEY"
+          [ "${HAS_DB}" = "true" ] || missing="$missing DB_ROOT_PASSWORD"
+          [ "${HAS_ADMIN}" = "true" ] || missing="$missing ADMIN_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Environment '${ENV_NAME}' is missing:${missing} (see docs/deployment/aws-ec2.md)"
+            exit 1
+          fi
 
       - name: Copy deploy files to the host
         uses: appleboy/scp-action@v0.1.7
@@ -207,9 +264,8 @@ jobs:
           # Passed via `envs:` so secret values never appear as literal text in the remote script.
           IMAGE_TAG: ${{ needs.build-test-publish.outputs.tag }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
-          # Not secret: environment variables, with the dev hostname as the default.
-          SITE_NAME: ${{ vars.SITE_NAME || 'spice-facility-dev.labsplatform.com' }}
-          DOMAIN: ${{ vars.DOMAIN || 'spice-facility-dev.labsplatform.com' }}
+          SITE_NAME: ${{ vars.SITE_NAME }}
+          DOMAIN: ${{ vars.DOMAIN }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
@@ -231,7 +287,7 @@ jobs:
             set -eu
             cd "${DEPLOY_PATH}"
 
-            # .env is CI-owned: rewritten from secrets on every deploy, never edited on the host.
+            # .env is CI-owned: rewritten from the environment's variables/secrets on every deploy.
             umask 077
             cat > .env <<ENV
             IMAGE_TAG=${IMAGE_TAG}
