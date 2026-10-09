@@ -1,0 +1,8 @@
+Outpatient
+Emergency
+Inpatient
+Diagnostics
+Pharmacy
+Rehabilitation
+Billing and Insurance
+Healthcare Setup
