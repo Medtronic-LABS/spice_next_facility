@@ -12,7 +12,7 @@ HEALTH_TRIES="${HEALTH_TRIES:-90}"   # x10s: a first deploy creates the site and
 # .env is data for Docker Compose, not a shell script: read the two values needed here instead of
 # sourcing it, so a secret's characters can never run as shell on the host.
 env_value() {
-	grep -E "^$1=" .env | tail -n 1 | cut -d= -f2- | sed -e "s/^'//" -e "s/'\$//"
+	{ grep -E "^$1=" .env || true; } | tail -n 1 | cut -d= -f2- | sed -e "s/^'//" -e "s/'\$//"
 }
 IMAGE_TAG="$(env_value IMAGE_TAG)"
 SITE_NAME="$(env_value SITE_NAME)"

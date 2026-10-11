@@ -55,8 +55,10 @@ build_base() {
 	. "${APP_DIR}/docker/base/versions.env"
 	set +a
 	docker build -f "${APP_DIR}/docker/base/Dockerfile" \
-		--build-arg BENCH_IMAGE --build-arg FRAPPE_REF --build-arg ERPNEXT_REF \
-		--build-arg HEALTHCARE_REF --build-arg FRAPPE_THEME_REF \
+		--build-arg BENCH_IMAGE \
+		--build-arg FRAPPE_REF --build-arg FRAPPE_COMMIT --build-arg ERPNEXT_REF --build-arg ERPNEXT_COMMIT \
+		--build-arg HEALTHCARE_REF --build-arg HEALTHCARE_COMMIT \
+		--build-arg FRAPPE_THEME_REF --build-arg FRAPPE_THEME_COMMIT \
 		-t "${BASE_IMAGE}" "${APP_DIR}/docker/base"
 }
 

@@ -11,7 +11,8 @@
 # attestation. Every run reuses a published base only if that attestation proves it was built by this workflow
 # from one of those branches; otherwise (a PR or tag changing docker/base/, a missing or unproven image) the
 # app job builds the base locally and nothing is published from it. The app image is built once, tested, and
-# that same image is pushed; the base is always referenced by digest.
+# that same image is pushed (only from develop/training/main and v* tags) with its own attestation; the deploy
+# verifies that attestation and runs the image by digest, never by a tag someone could have moved.
 #
 #   pull_request     -> checks, base, build + test app                 (nothing published or deployed)
 #   push develop     -> ... + publish sha-<commit>, develop  + deploy to environment "dev"
@@ -93,6 +94,8 @@ jobs:
       # reuse | build: `image` is the published base by digest.  local: the app job builds it itself.
       mode: ${{ steps.result.outputs.mode }}
       image: ${{ steps.result.outputs.image }}
+      # true for pushes/dispatches on develop/training/main and v* tag pushes: may publish the app image.
+      publish: ${{ steps.trust.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,8 +120,11 @@ jobs:
             workflow_dispatch:refs/heads/develop|workflow_dispatch:refs/heads/training|workflow_dispatch:refs/heads/main) trusted=true ;;
             *) trusted=false ;;
           esac
+          publish="${trusted}"
+          case "${EVENT}:${REF}" in push:refs/tags/v*) publish=true ;; esac
           echo "trusted=${trusted}" >> "$GITHUB_OUTPUT"
-          echo "Trusted to publish the base: ${trusted}"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "May publish the base: ${trusted}; may publish the app image: ${publish}"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -137,17 +143,19 @@ jobs:
           verified=false
           if [ "${FORCE}" != "true" ] && docker manifest inspect "${IMAGE}" >/dev/null 2>&1; then
             digest=$(docker buildx imagetools inspect "${IMAGE}" --format '{{json .Manifest}}' | jq -r .digest)
+            reasons=""
             for ref in refs/heads/develop refs/heads/training refs/heads/main; do
-              if gh attestation verify "oci://${IMAGE%:*}@${digest}" --repo "${GITHUB_REPOSITORY}" \
+              if out=$(gh attestation verify "oci://${IMAGE%:*}@${digest}" --repo "${GITHUB_REPOSITORY}" \
                   --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/docker-publish.yml" \
-                  --source-ref "${ref}" --deny-self-hosted-runners >/dev/null 2>&1; then
+                  --source-ref "${ref}" --deny-self-hosted-runners 2>&1); then
                 verified=true
                 echo "digest=${digest}" >> "$GITHUB_OUTPUT"
                 echo "Reusing ${IMAGE} (${digest}), attested from ${ref}"
                 break
               fi
+              reasons="${reasons}${ref}: $(printf '%s' "${out}" | tail -n 1); "
             done
-            [ "${verified}" = "true" ] || echo "::warning::${IMAGE} exists but has no attestation from a protected branch; not reusing it"
+            [ "${verified}" = "true" ] || echo "::warning::Not reusing ${IMAGE}: no attestation from a protected branch verified (${reasons})"
           fi
           echo "verified=${verified}" >> "$GITHUB_OUTPUT"
 
@@ -207,8 +215,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      # name@sha256:… of the pushed image (empty when nothing was published)
+      image: ${{ steps.push.outputs.image }}
     steps:
       - name: Checkout spice_facility
         uses: actions/checkout@v4
@@ -318,7 +330,7 @@ jobs:
         run: docker logs mariadb || true
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: needs.base.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -326,9 +338,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push the tested image
-        if: github.event_name != 'pull_request'
+        id: push
+        if: needs.base.outputs.publish == 'true'
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
+          SHA_TAG: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
         run: |
           set -eu
           while IFS= read -r tag; do
@@ -336,33 +350,52 @@ jobs:
             docker tag "${CI_IMAGE}" "${tag}"
             docker push --quiet "${tag}"
           done <<< "${TAGS}"
+          image=$(docker inspect --format '{{index .RepoDigests 0}}' "${SHA_TAG}")
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "digest=${image#*@}" >> "$GITHUB_OUTPUT"
+          echo "Published ${image}"
+
+      - name: Attest app image provenance
+        if: steps.push.outcome == 'success'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
 
   deploy:
     name: Deploy
     needs: build-test-publish
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/training')
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     environment:
       name: ${{ github.ref_name == 'training' && 'training' || 'dev' }}
       url: ${{ vars.SITE_URL }}
     concurrency:
       group: deploy-${{ github.ref_name }}
       cancel-in-progress: false
+    env:
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
+      IMAGE: ${{ needs.build-test-publish.outputs.image }}
+      IMAGE_TAG: ${{ needs.build-test-publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      # Values are written single-quoted into the host's .env (Docker Compose data, never sourced as shell)
-      # and passed through the SSH action's environment, so a quote or newline in a secret would corrupt
-      # them; passwords are additionally limited to a shell- and URL-safe alphabet.
+      # Values go single-quoted into the host's .env (Docker Compose data, never sourced as shell) and some
+      # into the SSH config, so a quote or newline would corrupt them; passwords are additionally limited to a
+      # shell- and URL-safe alphabet, hosts and paths to plain characters.
       - name: Environment is configured
         env:
           ENV_NAME: ${{ github.ref_name == 'training' && 'training' || 'dev' }}
           SITE_NAME: ${{ vars.SITE_NAME }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'ap-south-1' }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_HOST_FINGERPRINT: ${{ secrets.DEPLOY_HOST_FINGERPRINT }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           HAS_KEY: ${{ secrets.DEPLOY_SSH_KEY != '' }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
@@ -370,9 +403,11 @@ jobs:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           SPICE_AI_ANTHROPIC_API_KEY: ${{ secrets.SPICE_AI_ANTHROPIC_API_KEY }}
           SPICE_AI_OPENAI_API_KEY: ${{ secrets.SPICE_AI_OPENAI_API_KEY }}
+          GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
         run: |
           problems=""
-          for name in SITE_NAME DEPLOY_HOST DEPLOY_USER DEPLOY_HOST_FINGERPRINT ADMIN_PASSWORD DB_ROOT_PASSWORD; do
+          [ -n "${IMAGE}" ] || problems="${problems} image(nothing was published by this run)"
+          for name in SITE_NAME DEPLOY_HOST DEPLOY_USER DEPLOY_KNOWN_HOSTS ADMIN_PASSWORD DB_ROOT_PASSWORD; do
             [ -n "${!name}" ] || problems="${problems} ${name}(missing)"
           done
           [ "${HAS_KEY}" = "true" ] || problems="${problems} DEPLOY_SSH_KEY(missing)"
@@ -382,7 +417,12 @@ jobs:
               problems="${problems} ${name}(use 12+ characters from A-Z a-z 0-9 . _ ~ + = @ % , : / -)"
             fi
           done
-          for name in SITE_NAME BACKUP_S3_BUCKET ALERT_WEBHOOK_URL SPICE_AI_ANTHROPIC_API_KEY SPICE_AI_OPENAI_API_KEY; do
+          [[ "${DEPLOY_HOST}" =~ ^[A-Za-z0-9.:-]+$ ]] || problems="${problems} DEPLOY_HOST(hostname or IP only)"
+          [[ "${DEPLOY_USER}" =~ ^[a-z_][a-z0-9_-]*$ ]] || problems="${problems} DEPLOY_USER(plain user name)"
+          [[ "${DEPLOY_PORT}" =~ ^[0-9]+$ ]] || problems="${problems} DEPLOY_PORT(number)"
+          [[ "${DEPLOY_PATH}" =~ ^/[A-Za-z0-9._/-]+$ ]] || problems="${problems} DEPLOY_PATH(absolute path, plain characters)"
+          [[ -z "${GHCR_PULL_USER}" || "${GHCR_PULL_USER}" =~ ^[A-Za-z0-9-]+$ ]] || problems="${problems} GHCR_PULL_USER(GitHub user name)"
+          for name in SITE_NAME DOMAIN AWS_DEFAULT_REGION BACKUP_S3_BUCKET ALERT_WEBHOOK_URL SPICE_AI_ANTHROPIC_API_KEY SPICE_AI_OPENAI_API_KEY; do
             case "${!name}" in *"'"* | *$'\n'*) problems="${problems} ${name}(contains a quote or newline)" ;; esac
           done
           if [ -n "${problems}" ]; then
@@ -390,71 +430,99 @@ jobs:
             exit 1
           fi
 
-      - name: Copy deploy files to the host
-        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          fingerprint: ${{ secrets.DEPLOY_HOST_FINGERPRINT }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          source: "deploy/docker-compose.yml,deploy/Caddyfile,deploy/deploy.sh"
-          target: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
-          strip_components: 1
-
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+      # The host runs exactly the image this run tested and attested, by digest: a tag moved afterwards (by a
+      # PR or another branch) cannot change what is deployed.
+      - name: Image is attested by this branch
         env:
-          # Passed via `envs:` so secret values never appear as literal text in the remote script.
-          IMAGE_TAG: ${{ needs.build-test-publish.outputs.tag }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify "oci://${IMAGE}" --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/docker-publish.yml" \
+            --source-ref "${GITHUB_REF}" --deny-self-hosted-runners
+
+      # Runner-native OpenSSH with the host key pinned (no third-party action handles the key or secrets).
+      - name: SSH client
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          (umask 077 && printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key)
+          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host deploy-target
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            BatchMode yes
+            ServerAliveInterval 30
+          CFG
+          ssh deploy-target true
+
+      # .env is CI-owned: rewritten from the environment's variables/secrets on every deploy and copied as a
+      # 0600 file, so no secret appears on a command line on the runner or the host.
+      - name: Write the host's .env
+        env:
           SITE_NAME: ${{ vars.SITE_NAME }}
           DOMAIN: ${{ vars.DOMAIN }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'ap-south-1' }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
-          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'ap-south-1' }}
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           SPICE_AI_ANTHROPIC_API_KEY: ${{ secrets.SPICE_AI_ANTHROPIC_API_KEY }}
           SPICE_AI_OPENAI_API_KEY: ${{ secrets.SPICE_AI_OPENAI_API_KEY }}
+        run: |
+          umask 077
+          cat > "${RUNNER_TEMP}/deploy.env" <<ENV
+          IMAGE_TAG='${IMAGE_TAG}@${IMAGE#*@}'
+          GHCR_OWNER='medtronic-labs'
+          SITE_NAME='${SITE_NAME}'
+          DOMAIN='${DOMAIN}'
+          ADMIN_PASSWORD='${ADMIN_PASSWORD}'
+          DB_ROOT_PASSWORD='${DB_ROOT_PASSWORD}'
+          DB_TLS='off'
+          SPICE_AI_OLLAMA_ENABLED='0'
+          SPICE_AI_ANTHROPIC_API_KEY='${SPICE_AI_ANTHROPIC_API_KEY}'
+          SPICE_AI_OPENAI_API_KEY='${SPICE_AI_OPENAI_API_KEY}'
+          BACKUP_S3_BUCKET='${BACKUP_S3_BUCKET}'
+          AWS_DEFAULT_REGION='${AWS_DEFAULT_REGION}'
+          ALERT_WEBHOOK_URL='${ALERT_WEBHOOK_URL}'
+          ENV
+
+      - name: Copy deploy files and .env to the host
+        run: |
+          # shellcheck disable=SC2029 # client-side expansion is intended; values are validated above
+          ssh deploy-target "mkdir -p '${DEPLOY_PATH}'"
+          scp -q deploy/docker-compose.yml deploy/Caddyfile deploy/deploy.sh "deploy-target:${DEPLOY_PATH}/"
+          scp -q "${RUNNER_TEMP}/deploy.env" "deploy-target:${DEPLOY_PATH}/.env.new"
+          # shellcheck disable=SC2029
+          ssh deploy-target "cd '${DEPLOY_PATH}' && chmod 600 .env.new && mv .env.new .env && chmod +x deploy.sh"
+
+      # Only for a private GHCR package; the token travels on stdin.
+      - name: Log in to GHCR on the host
+        env:
           GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          fingerprint: ${{ secrets.DEPLOY_HOST_FINGERPRINT }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          # deploy.sh waits up to 15 min for a first-ever site setup, plus a possible rollback.
-          command_timeout: 40m
-          envs: IMAGE_TAG,DEPLOY_PATH,SITE_NAME,DOMAIN,ADMIN_PASSWORD,DB_ROOT_PASSWORD,BACKUP_S3_BUCKET,AWS_DEFAULT_REGION,ALERT_WEBHOOK_URL,SPICE_AI_ANTHROPIC_API_KEY,SPICE_AI_OPENAI_API_KEY,GHCR_PULL_USER,GHCR_PULL_TOKEN
-          script: |
-            set -eu
-            cd "${DEPLOY_PATH}"
+        run: |
+          # shellcheck disable=SC2029 # client-side expansion is intended; values are validated above
+          if [ -n "${GHCR_PULL_TOKEN}" ]; then
+            printf '%s' "${GHCR_PULL_TOKEN}" | ssh deploy-target "docker login ghcr.io -u '${GHCR_PULL_USER}' --password-stdin"
+          fi
 
-            # .env is CI-owned: rewritten from the environment's variables/secrets on every deploy. Values are
-            # single-quoted (literal to Docker Compose); deploy.sh reads it as data, never sources it.
-            umask 077
-            cat > .env <<ENV
-            IMAGE_TAG='${IMAGE_TAG}'
-            GHCR_OWNER='medtronic-labs'
-            SITE_NAME='${SITE_NAME}'
-            DOMAIN='${DOMAIN}'
-            ADMIN_PASSWORD='${ADMIN_PASSWORD}'
-            DB_ROOT_PASSWORD='${DB_ROOT_PASSWORD}'
-            DB_TLS='off'
-            SPICE_AI_OLLAMA_ENABLED='0'
-            SPICE_AI_ANTHROPIC_API_KEY='${SPICE_AI_ANTHROPIC_API_KEY}'
-            SPICE_AI_OPENAI_API_KEY='${SPICE_AI_OPENAI_API_KEY}'
-            BACKUP_S3_BUCKET='${BACKUP_S3_BUCKET}'
-            AWS_DEFAULT_REGION='${AWS_DEFAULT_REGION}'
-            ALERT_WEBHOOK_URL='${ALERT_WEBHOOK_URL}'
-            ENV
+      # deploy.sh waits up to 15 min for a first-ever site setup, plus a possible rollback.
+      - name: Deploy
+        run: |
+          # shellcheck disable=SC2029 # client-side expansion is intended; values are validated above
+          ssh deploy-target "cd '${DEPLOY_PATH}' && ./deploy.sh"
 
-            # Private GHCR package: log in with a read-only token if one is configured.
-            if [ -n "${GHCR_PULL_TOKEN}" ]; then
-              echo "${GHCR_PULL_TOKEN}" | docker login ghcr.io -u "${GHCR_PULL_USER}" --password-stdin
-            fi
-
-            chmod +x deploy.sh
-            ./deploy.sh
+      - name: Remove credentials from the runner
+        if: always()
+        run: rm -f ~/.ssh/deploy_key "${RUNNER_TEMP}/deploy.env"

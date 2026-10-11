@@ -36,9 +36,12 @@ layers, and the EC2 pulls only those. The base is pulled once per version bump a
 **Trust.** Only pushes to `develop`, `training` or `main` publish a base, with a signed build-provenance
 attestation. A run reuses a published base only if `gh attestation verify` proves this workflow built it
 from one of those branches. A PR or tag that changes `docker/base/` builds the base inside its own job and
-publishes nothing from it. The app image is built once, tested, and that same image is pushed; the base is
-referenced by digest. Checkouts keep no credentials and `.git` never enters the image
-(`docker/allinone/Dockerfile.dockerignore`).
+publishes nothing from it. The app image is built once, tested, and that same image is pushed (only from
+`develop`, `training`, `main` and `v*` tags) with its own attestation; the deploy job verifies that attestation
+against the branch being deployed and runs the image **by digest**, so a tag moved later cannot change what
+runs. Checkouts keep no credentials and `.git` never enters the image (`docker/allinone/Dockerfile.dockerignore`).
+The deploy uses the runner's own OpenSSH with the host key pinned (`StrictHostKeyChecking=yes`); `.env` is
+copied as a 0600 file, so no secret appears on a command line.
 
 **Upgrading Frappe / ERPNext / Health / frappe_theme:** in `docker/base/versions.env` change the release
 tag **and** the commit it resolves to (`git ls-remote https://github.com/<repo>.git 'refs/tags/<tag>*'`; the
@@ -111,7 +114,7 @@ Each may deploy only from its own branch (deployment branch policy: `dev` ← `d
 | `DEPLOY_HOST` | Elastic IP or hostname of the instance |
 | `DEPLOY_USER` | `ubuntu` |
 | `DEPLOY_SSH_KEY` | private key of the deploy key pair |
-| `DEPLOY_HOST_FINGERPRINT` | the host's SSH key fingerprint, so the deploy refuses an impostor host: `ssh ubuntu@<ip> 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub' \| cut -d' ' -f2` (`SHA256:…`; compare it with the EC2 console's system log) |
+| `DEPLOY_KNOWN_HOSTS` | the host's SSH key as a `known_hosts` line, so the deploy refuses an impostor host: `ssh-keyscan -t ed25519 <elastic-ip>` (add `-p <port>` if not 22). Check it first: `ssh-keyscan -t ed25519 <elastic-ip> \| ssh-keygen -lf -` must show the same `SHA256:…` as the EC2 console's system log (Actions → Monitor → Get system log) |
 | `DEPLOY_PORT` | optional, default 22 |
 | `ADMIN_PASSWORD` | Administrator password (used when the site is first created) |
 | `DB_ROOT_PASSWORD` | MariaDB root password (long, random; never reused): `openssl rand -base64 32 \| tr -d '\n'` |
@@ -141,9 +144,10 @@ for publishing.
 
 Push to `develop` (dev) or `training` (training), or run the workflow manually on that branch. The deploy job:
 
-1. copies `docker-compose.yml`, `Caddyfile`, `deploy.sh` to `DEPLOY_PATH`,
-2. writes `.env` from the secrets (CI-owned; do not edit it on the host),
-3. runs `deploy.sh`: pull the `sha-<commit>` image → `docker compose up -d` → wait for
+1. checks the environment's secrets and that the image was built and attested by this branch,
+2. copies `docker-compose.yml`, `Caddyfile`, `deploy.sh` and a freshly written `.env` (CI-owned; do not edit
+   it on the host) to `DEPLOY_PATH` over SSH with the pinned host key,
+3. runs `deploy.sh`: pull the `sha-<commit>@sha256:…` image → `docker compose up -d` → wait for
    `/api/method/ping` (a first deploy creates the site and installs ERPNext, Health, frappe_theme and
    spice_facility — allow ~10 minutes) → on failure, roll back to the last healthy tag.
 
@@ -160,7 +164,7 @@ Merge to `develop` / `training`. Tests must pass before an image is pushed; `sit
 `bench migrate` on start (single instance, so there is no migration race).
 
 Run a specific earlier build: re-run the deploy job of that commit's workflow run, or on the host set
-`IMAGE_TAG=sha-<commit>` in `.env` and run `./deploy.sh`.
+`IMAGE_TAG='sha-<commit>'` (or `'sha-<commit>@sha256:<digest>'`) in `.env` and run `./deploy.sh`.
 
 ## 6. Operations
 
@@ -189,6 +193,8 @@ Also enable **EBS snapshots** (AWS Data Lifecycle Manager, daily) as a second, w
 
 ## Next steps when this outgrows one host
 
-Move MariaDB to Amazon RDS (set `DB_HOST`, `DB_TLS=verify` and `DB_SSL_CA` to the RDS CA bundle, and drop
-the `mariadb` service), put an ALB + ACM in front
+Move MariaDB to Amazon RDS and drop the `mariadb` service. **Not wired up yet:** the image's MariaDB CLI
+clients support `DB_TLS=verify` + `DB_SSL_CA`, but the deploy job still writes `DB_TLS='off'`, compose pins
+`DB_HOST: mariadb`, no CA bundle is mounted, and Frappe's own connection needs `db_ssl_ca` in the site
+config — all four must change before RDS (TLS end to end). Put an ALB + ACM in front
 instead of Caddy, and replace SSH deploys with SSM Run Command via GitHub OIDC.

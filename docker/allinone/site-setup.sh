@@ -54,7 +54,8 @@ for app in ${APPS}; do
 	fi
 done
 
-if [ -n "${DOMAIN:-}" ]; then
+# A DOMAIN of ":<port>" (Caddy's "any host" form) names no host, so it sets no host_name.
+if [ -n "${DOMAIN:-}" ] && [ "${DOMAIN#:}" = "${DOMAIN}" ]; then
 	# DOMAIN may carry an explicit scheme (http://host serves plain HTTP); otherwise Caddy serves HTTPS.
 	case "${DOMAIN}" in
 		http://*|https://*) HOST_URL="${DOMAIN}" ;;
