@@ -350,9 +350,11 @@ jobs:
             docker tag "${CI_IMAGE}" "${tag}"
             docker push --quiet "${tag}"
           done <<< "${TAGS}"
-          image=$(docker inspect --format '{{index .RepoDigests 0}}' "${SHA_TAG}")
+          # The registry's digest for the tag just pushed (local RepoDigests can list other names).
+          digest=$(docker buildx imagetools inspect "${SHA_TAG}" --format '{{json .Manifest}}' | jq -r .digest)
+          image="${SHA_TAG%:*}@${digest}"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
-          echo "digest=${image#*@}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "Published ${image}"
 
       - name: Attest app image provenance
@@ -368,6 +370,10 @@ jobs:
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/training')
     runs-on: ubuntu-latest
     timeout-minutes: 50
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
     environment:
       name: ${{ github.ref_name == 'training' && 'training' || 'dev' }}
       url: ${{ vars.SITE_URL }}
@@ -432,6 +438,14 @@ jobs:
 
       # The host runs exactly the image this run tested and attested, by digest: a tag moved afterwards (by a
       # PR or another branch) cannot change what is deployed.
+      # Read access works for a public or a private package.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Image is attested by this branch
         env:
           GH_TOKEN: ${{ github.token }}

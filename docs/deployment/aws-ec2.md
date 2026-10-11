@@ -164,7 +164,11 @@ Merge to `develop` / `training`. Tests must pass before an image is pushed; `sit
 `bench migrate` on start (single instance, so there is no migration race).
 
 Run a specific earlier build: re-run the deploy job of that commit's workflow run, or on the host set
-`IMAGE_TAG='sha-<commit>'` (or `'sha-<commit>@sha256:<digest>'`) in `.env` and run `./deploy.sh`.
+`IMAGE_TAG='sha-<commit>@sha256:<digest>'` in `.env` and run `./deploy.sh`. Always include the digest
+(from that run's "Push the tested image" step, or `docker buildx imagetools inspect
+ghcr.io/medtronic-labs/spice_next_facility:sha-<commit>`, checked with `gh attestation verify
+oci://ghcr.io/medtronic-labs/spice_next_facility@sha256:<digest> --repo Medtronic-LABS/spice_next_facility`): a
+bare tag can be overwritten, a digest cannot.
 
 ## 6. Operations
 
