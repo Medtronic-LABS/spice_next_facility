@@ -33,9 +33,18 @@ with an automatic rollback to the last healthy build if the new one does not com
 A push that changes only `spice_facility` reuses the base (the base job is a no-op), builds a few small
 layers, and the EC2 pulls only those. The base is pulled once per version bump and cached on each host.
 
-**Upgrading Frappe / ERPNext / Health / frappe_theme:** edit the release tags in
-`docker/base/versions.env` (bump `BASE_REVISION` to force a rebuild without a version change), open a PR
-into `develop`, merge. That run builds the new base once (~30 min), every later run reuses it. Run the
+**Trust.** Only pushes to `develop`, `training` or `main` publish a base, with a signed build-provenance
+attestation. A run reuses a published base only if `gh attestation verify` proves this workflow built it
+from one of those branches. A PR or tag that changes `docker/base/` builds the base inside its own job and
+publishes nothing from it. The app image is built once, tested, and that same image is pushed; the base is
+referenced by digest. Checkouts keep no credentials and `.git` never enters the image
+(`docker/allinone/Dockerfile.dockerignore`).
+
+**Upgrading Frappe / ERPNext / Health / frappe_theme:** in `docker/base/versions.env` change the release
+tag **and** the commit it resolves to (`git ls-remote https://github.com/<repo>.git 'refs/tags/<tag>*'`; the
+build fails if a tag no longer matches its pinned commit). `BENCH_IMAGE` is pinned by digest
+(`docker buildx imagetools inspect frappe/bench:<tag>`). Bump `BASE_REVISION` to force a rebuild without a
+version change. Open a PR into `develop`, merge. That run builds the new base once (~30 min), every later run reuses it. Run the
 workflow manually with **rebuild_base** to rebuild it on demand.
 
 No local AI model runs here (`SPICE_AI_OLLAMA_ENABLED=0`): AI summaries are off; Ask Data works with
@@ -90,7 +99,9 @@ Create a **deploy key pair** for GitHub (`ssh-keygen -t ed25519 -f deploy_key -N
 Repository: `Medtronic-LABS/spice_next_facility` (this app's source, Python package `spice_facility`).
 
 Environments **`dev`** and **`training`** exist with their variables already set (Settings → Environments).
-Optionally add required reviewers (e.g. on `training`) so a deploy waits for approval. Add these
+Each may deploy only from its own branch (deployment branch policy: `dev` ← `develop`, `training` ←
+`training`), so a PR's workflow can never read their secrets. Optionally add required reviewers (e.g. on
+`training`) so a deploy waits for approval. Add these
 **to each environment**, with that environment's instance and passwords:
 
 **Secrets**
@@ -100,9 +111,13 @@ Optionally add required reviewers (e.g. on `training`) so a deploy waits for app
 | `DEPLOY_HOST` | Elastic IP or hostname of the instance |
 | `DEPLOY_USER` | `ubuntu` |
 | `DEPLOY_SSH_KEY` | private key of the deploy key pair |
+| `DEPLOY_HOST_FINGERPRINT` | the host's SSH key fingerprint, so the deploy refuses an impostor host: `ssh ubuntu@<ip> 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub' \| cut -d' ' -f2` (`SHA256:…`; compare it with the EC2 console's system log) |
 | `DEPLOY_PORT` | optional, default 22 |
 | `ADMIN_PASSWORD` | Administrator password (used when the site is first created) |
-| `DB_ROOT_PASSWORD` | MariaDB root password (long, random; never reused) |
+| `DB_ROOT_PASSWORD` | MariaDB root password (long, random; never reused): `openssl rand -base64 32 \| tr -d '\n'` |
+
+Both passwords must be 12+ characters from `A-Z a-z 0-9 . _ ~ + = @ % , : / -` (the deploy job checks this
+before touching the host); no secret may contain a quote or newline.
 | `BACKUP_S3_BUCKET` | backup bucket name (empty = backups stay on the instance) |
 | `ALERT_WEBHOOK_URL` | optional Slack/Teams webhook for backup failures |
 | `SPICE_AI_ANTHROPIC_API_KEY` | optional Claude key for Ask Data |
@@ -174,5 +189,6 @@ Also enable **EBS snapshots** (AWS Data Lifecycle Manager, daily) as a second, w
 
 ## Next steps when this outgrows one host
 
-Move MariaDB to Amazon RDS (set `DB_HOST` and drop the `mariadb` service), put an ALB + ACM in front
+Move MariaDB to Amazon RDS (set `DB_HOST`, `DB_TLS=verify` and `DB_SSL_CA` to the RDS CA bundle, and drop
+the `mariadb` service), put an ALB + ACM in front
 instead of Caddy, and replace SSH deploys with SSM Run Command via GitHub OIDC.

@@ -9,10 +9,14 @@ COMPOSE="docker compose -f docker-compose.yml"
 LAST_GOOD_FILE=.last_good_image_tag
 HEALTH_TRIES="${HEALTH_TRIES:-90}"   # x10s: a first deploy creates the site and installs 4 apps
 
-set -a
-# shellcheck disable=SC1091
-. ./.env
-set +a
+# .env is data for Docker Compose, not a shell script: read the two values needed here instead of
+# sourcing it, so a secret's characters can never run as shell on the host.
+env_value() {
+	grep -E "^$1=" .env | tail -n 1 | cut -d= -f2- | sed -e "s/^'//" -e "s/'\$//"
+}
+IMAGE_TAG="$(env_value IMAGE_TAG)"
+SITE_NAME="$(env_value SITE_NAME)"
+: "${IMAGE_TAG:?IMAGE_TAG missing from .env}" "${SITE_NAME:?SITE_NAME missing from .env}"
 
 healthy() {
 	curl -fsS -H "Host: ${SITE_NAME}" "http://127.0.0.1:8000/api/method/ping" >/dev/null 2>&1
@@ -47,7 +51,7 @@ echo "[deploy] health check failed for ${IMAGE_TAG}" >&2
 docker logs --tail 80 spice-next-facility >&2 || true
 if [ -n "${previous}" ] && [ "${previous}" != "${IMAGE_TAG}" ]; then
 	echo "[deploy] rolling back to ${previous}" >&2
-	sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${previous}/" .env
+	sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG='${previous}'/" .env
 	IMAGE_TAG="${previous}" ${COMPOSE} up -d app
 	if wait_healthy; then
 		echo "[deploy] rolled back to ${previous}" >&2
