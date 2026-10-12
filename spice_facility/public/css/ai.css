@@ -48,6 +48,10 @@
 .sf-ask-head { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .sf-ask-context { flex: 1; min-width: 0; }
 .sf-ask-head .icon { width: 14px; height: 14px; }
+.sf-ask-head .sf-ask-print { width: 30px; height: 30px; border: 0; background: none; box-shadow: none; }
+.sf-ask-head .sf-ask-print:hover:not(:disabled) { background: var(--subtle-fg); color: var(--text-color); }
+.sf-ask-head .sf-ask-print:disabled { opacity: .35; }
+.sf-ask-head .sf-ask-print .icon { width: 16px; height: 16px; }
 .sf-ask-chip { border: 1px solid var(--border-color); background: var(--fg-color); border-radius: 999px; padding: 3px 12px; font-size: var(--text-sm); color: var(--text-muted); }
 .sf-ask-chip.active { border-color: var(--primary); color: var(--primary); background: var(--blue-50, var(--fg-color)); }
 .sf-ask-thread { display: flex; flex-direction: column; gap: 14px; }

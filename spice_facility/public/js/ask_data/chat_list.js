@@ -113,8 +113,43 @@ frappe.provide("spice_facility.ai.ask");
 			}
 		},
 
+		// ─── download the open chat as a PDF ─────────────────────────────────
+		print_button() {
+			const label = this.S.download_pdf;
+			return `<button class="btn btn-xs btn-default sf-ask-icon-btn sf-ask-print" title="${esc(label)}" aria-label="${esc(label)}"
+				${this.thread_id ? "" : "disabled"}>${icon("printer")}</button>`;
+		},
+
+		print_chat() {
+			const S = this.S;
+			if (!this.thread_id) return;
+			const thread = this.thread_id;
+			const title = (this.threads || []).find((t) => t.thread === thread)?.title || S.title;
+			const dialog = new frappe.ui.Dialog({
+				title: S.download_pdf,
+				fields: [
+					{ fieldname: "filename", fieldtype: "Data", label: S.file_name, reqd: 1,
+					  default: `${title.slice(0, 60)} - ${frappe.datetime.str_to_user(frappe.datetime.get_today())}` },
+					{ fieldname: "include_questions", fieldtype: "Check", label: S.include_questions, default: 1 },
+				],
+				primary_action_label: S.download_pdf,
+				primary_action: (values) => {
+					const query = new URLSearchParams({ thread, include_questions: values.include_questions ? 1 : 0,
+					                                    filename: values.filename });
+					// a same-page link: the browser downloads the file (attachment) without opening an empty tab
+					const link = Object.assign(document.createElement("a"), { href: `/api/method/${API}.export_thread_pdf?${query}` });
+					document.body.appendChild(link);
+					link.click();
+					link.remove();
+					dialog.hide();
+				},
+			});
+			dialog.show();
+		},
+
 		set_thread_id(thread_id) {
 			this.thread_id = thread_id;
+			this.$root?.find(".sf-ask-print").prop("disabled", !thread_id);
 			try {
 				if (thread_id) sessionStorage.setItem(store_key(), thread_id);
 				else sessionStorage.removeItem(store_key());

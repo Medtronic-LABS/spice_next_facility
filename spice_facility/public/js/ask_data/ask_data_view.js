@@ -50,6 +50,7 @@ frappe.provide("spice_facility.ai");
 						${this.new_chat_button()}
 					</div>
 					<div class="sf-ask-context"></div>
+					${this.print_button()}
 				</div>
 				<div class="sf-ask-thread"></div>
 				<div class="sf-ask-examples"></div>
@@ -70,6 +71,7 @@ frappe.provide("spice_facility.ai");
 			this.$root.find(".sf-ask-provider").on("change", (e) => { this.provider = e.target.value; this.render_note(); });
 			this.$root.find(".sf-ask-new").on("click", () => this.new_chat());
 			this.$root.find(".sf-ask-side-toggle").on("click", () => this.toggle_side());
+			this.$root.find(".sf-ask-print").on("click", () => this.print_chat());
 			this.$root.on("click", ".sf-ask-thread-item", (e) => this.open_thread(e.currentTarget.dataset.thread));
 			this.$root.on("click", ".sf-ask-thread-del", (e) => this.delete_thread(e.currentTarget.dataset.thread));
 			const wide_page_default = () => this.mode === "page" && !this.overlay() && !this.side_pref_hidden();

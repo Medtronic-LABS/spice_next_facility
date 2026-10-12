@@ -7,7 +7,7 @@ import re
 
 import frappe
 from frappe import _
-from frappe.utils import now_datetime
+from frappe.utils import cint, flt, now_datetime
 from frappe.utils.background_jobs import get_job
 from rq.exceptions import InvalidJobOperation, NoSuchJobError
 
@@ -15,7 +15,7 @@ from spice_facility.ai import data_catalog, query
 from spice_facility.ai.config import ensure_ai_access, get_config
 from spice_facility.ai.providers.base import AIProviderError
 from spice_facility.ai.providers.registry import chat_provider
-from spice_facility.ai.talk_to_data import HISTORY_TURNS, run_question
+from spice_facility.ai.talk_to_data import HISTORY_TURNS, LINK_TOKEN, run_question
 from spice_facility.api.ai_summary import enforce_rate_limit
 
 LOG = "SPICE AI Query Log"
@@ -264,6 +264,112 @@ def pin_chart(log: str, title: str) -> dict:
 	if frappe.db.exists("Dashboard Chart", args["chart_name"]):
 		frappe.throw(_("A Dashboard Chart named {0} already exists.").format(args["chart_name"]), frappe.DuplicateEntryError)
 	return create_dashboard_chart(**{k: v for k, v in args.items() if v is not None})
+
+
+# ─── PDF of a chat ───────────────────────────────────────────────────────────
+
+PDF_TEMPLATE = "spice_facility/templates/ask_data/thread_pdf.html"
+PDF_MAX_ROWS = 100
+PDF_OPTIONS = {"page-size": "A4", "margin-top": "14mm", "margin-bottom": "16mm", "margin-left": "12mm",
+               "margin-right": "12mm", "encoding": "UTF-8", "footer-font-size": "7", "footer-spacing": "4"}
+FILENAME_UNSAFE = re.compile(r"[^\w\s.-]", re.UNICODE)
+MAX_FILENAME = 80
+
+
+def safe_filename(name, fallback="ask-data"):
+	"""A download name a user typed, made safe: no path parts or quotes, single spaces, capped, ending in .pdf."""
+	name = FILENAME_UNSAFE.sub("", str(name or "")).replace("..", ".")
+	name = re.sub(r"\s+", " ", name).strip(" .")[:MAX_FILENAME].strip(" .") or fallback
+	return name if name.lower().endswith(".pdf") else f"{name}.pdf"
+
+
+def _plain_text(text, labels):
+	"""Answer text with record links as plain labels (a PDF has no desk to open them in)."""
+	return LINK_TOKEN.sub(lambda m: labels.get(f"{m.group(1).strip()}:{m.group(2).strip()}") or m.group(2).strip(),
+	                      text or "")
+
+
+def _cell(row, column):
+	value = row.get("display", row.get("label")) if column["field"] == "label" else row.get(column["field"])
+	if value in (None, ""):
+		return "—"
+	if column.get("type") in ("Float", "Currency", "Int", "Percent"):
+		return frappe.format(value, {"fieldtype": "Float" if column["type"] == "Float" else column["type"]})
+	if column.get("type") in ("Date", "Datetime"):
+		return frappe.format(value, {"fieldtype": column["type"]})
+	return str(value)
+
+
+def _pdf_visual(answer):
+	"""What the PDF shows under the text: ranked bars for groups, otherwise the answer's table (capped)."""
+	table = answer.get("table") or {}
+	rows, columns = table.get("rows") or [], table.get("columns") or []
+	if answer.get("kind") == "groups" and rows:
+		top = max((flt(r.get("value")) for r in rows), default=0) or 1
+		return {"kind": "bars", "rows": [{"label": r.get("display", r.get("label")), "value": _cell(r, columns[1]),
+		                                  "width": round(flt(r.get("value")) / top * 100, 1)} for r in rows]}
+	if not rows:
+		return None
+	return {"kind": "table", "columns": [c["label"] for c in columns],
+	        "rows": [[_cell(r, c) for c in columns] for r in rows[:PDF_MAX_ROWS]],
+	        "more": _("First {0} of {1} rows").format(PDF_MAX_ROWS, len(rows)) if len(rows) > PDF_MAX_ROWS else None}
+
+
+def _pdf_turn(row, include_questions):
+	answer = json.loads(row.answer_json or "{}") or {}
+	labels = {f"{r['doctype']}:{r['name']}": r.get("label") for r in answer.get("sources") or []}
+	number = answer.get("number") or ({"value": answer["total"], "label": (answer.get("source") or {}).get("dataset")}
+	                                  if answer.get("total") is not None else None)
+	src = answer.get("source") or {}
+	source = " · ".join(p for p in [src.get("dataset"), src.get("measure"), src.get("group_by"), src.get("bucket"),
+	                                *(src.get("filters") or []), src.get("period"), *(src.get("scope") or [])] if p) \
+		or answer.get("how") or ""
+	return {
+		"question": row.question if include_questions else None,
+		"title": answer.get("title") if answer.get("mode") == "data" else None,
+		"kpi": {"value": frappe.format(number["value"], {"fieldtype": "Float"}), "label": number.get("label") or ""}
+		if number else None,
+		"text": _plain_text(answer.get("text"), labels),
+		"visual": _pdf_visual(answer),
+		"source": source,
+		"meta": " · ".join(p for p in [
+			_("{0} records read").format(answer["rows_read"]) if answer.get("rows_read") is not None else None,
+			" · ".join(m for m in [row.provider, row.model] if m),
+			frappe.format(row.creation, {"fieldtype": "Datetime"})] if p),
+	}
+
+
+@frappe.whitelist()
+def export_thread_pdf(thread: str, include_questions: int = 1, filename: str | None = None):
+	"""One of the user's chats as a PDF of its answers (optionally with the questions), from the stored answers."""
+	from frappe.core.doctype.access_log.access_log import make_access_log
+	from frappe.utils.pdf import get_pdf
+
+	ensure_ai_access()
+	include_questions = cint(include_questions)
+	filters = {**_thread_filters(thread), "status": "Answered"}
+	rows = frappe.get_all(LOG, filters, ["name", "question", "answer_json", "provider", "model", "creation"],
+	                      order_by="creation desc", limit=MAX_THREAD_TURNS)
+	if not rows:
+		frappe.throw(_("This chat has no answers to download."), frappe.ValidationError)
+	rows.reverse()
+	turns = [_pdf_turn(r, include_questions) for r in rows]
+	# The heading is the name the user gave the file; otherwise the chat's first question, or, when questions are
+	# left out, the first answer's title (never a question the user chose not to include).
+	title = (re.sub(r"(?i)\.pdf$", "", (filename or "").strip())
+	         or (rows[0].question if include_questions else next((t["title"] for t in turns if t["title"]), _("Ask Data"))))
+	html = frappe.render_template(PDF_TEMPLATE, {
+		"title": title, "turns": turns,
+		"exported_by": frappe.utils.get_fullname(frappe.session.user), "exported_on": frappe.format(now_datetime(), {"fieldtype": "Datetime"}),
+		"include_questions": include_questions,
+	})
+	# every page carries the caveat and its page number
+	pdf = get_pdf(html, {**PDF_OPTIONS, "footer-left": _("AI-generated answers — verify before clinical use."),
+	                     "footer-right": _("Page [page] of [topage]")})
+	make_access_log(doctype=LOG, document=rows[0].name, method="Ask Data PDF", file_type="PDF",
+	                filters=json.dumps({"thread": thread, "include_questions": include_questions}))
+	frappe.response.update({"type": "download", "filename": safe_filename(filename or title), "filecontent": pdf,
+	                        "content_type": "application/pdf"})
 
 
 @frappe.whitelist()
