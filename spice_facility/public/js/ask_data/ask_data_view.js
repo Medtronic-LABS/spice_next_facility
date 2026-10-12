@@ -194,7 +194,9 @@ frappe.provide("spice_facility.ai");
 			this.fit_input(this.$root.find(".sf-ask-input").val("").get(0));
 			this.$root.find(".sf-ask-examples").empty();
 			const $turn = this.render_question(question);
-			const $answer = $(`<div class="sf-ask-answer"><span class="sf-ai-spinner"></span> ${esc(this.S.thinking)}</div>`).appendTo($turn);
+			const $answer = $(this.pending_html()).appendTo($turn);
+			const started = Date.now();
+			const tick = setInterval(() => $answer.find(".sf-ask-elapsed").text(this.S.elapsed(Math.round((Date.now() - started) / 1000))), 1000);
 			this.scroll();
 			try {
 				const page = use_context ? this.page() : null;
@@ -202,7 +204,8 @@ frappe.provide("spice_facility.ai");
 					question, provider: this.provider, page: page ? JSON.stringify(page) : null, use_context: use_context ? 1 : 0,
 					history: JSON.stringify(this.history.slice(-2).map((t) => ({ question: t.question, spec: t.answer?.spec }))),
 				});
-				const result = await this.wait(log);
+				const result = await this.wait(log, (status) =>
+					$answer.find(".sf-ask-pending-text").text(status === "Queued" ? this.S.queued : this.S.thinking));
 				const turn = { question, log, status: result.status, error: result.error, answer: result.answer,
 				               asked_on: result.asked_on, duration_ms: result.duration_ms };
 				this.history.push(turn);
@@ -210,19 +213,21 @@ frappe.provide("spice_facility.ai");
 				$answer.replaceWith(this.answer_html(turn));
 				this.after_render($turn, turn);
 			} catch (error) {
-				$answer.html(`<div class="sf-ask-error">${esc(this.S.failed)}</div>`);
+				$answer.removeClass("sf-ask-pending").html(`<div class="sf-ask-error">${esc(this.S.failed)}</div>`);
 			} finally {
+				clearInterval(tick);
 				this.busy = false;
 				this.scroll();
 			}
 		}
 
-		wait(log) {
+		wait(log, on_status = () => {}) {
 			return new Promise((resolve) => {
 				let done = false;
 				const finish = async () => {
 					if (done) return;
 					const data = await frappe.xcall(`${API}.get_answer`, { log });
+					on_status(data.status);
 					if (["Answered", "Failed"].includes(data.status)) {
 						done = true;
 						waiting.delete(log);
@@ -236,6 +241,18 @@ frappe.provide("spice_facility.ai");
 		}
 
 		// ─── rendering ──────────────────────────────────────────────────────
+		// While the answer is being worked out: what is happening, how long so far, and the shape of the card to come.
+		pending_html() {
+			return `<div class="sf-ask-answer sf-ask-pending" role="status" aria-live="polite">
+				<div class="sf-ask-pending-head">
+					<span class="sf-ask-spark sf-ask-pulse">${icon("sparkles")}</span>
+					<span class="sf-ask-pending-text">${esc(this.S.thinking)}</span>
+					<span class="sf-ask-elapsed"></span>
+				</div>
+				<div class="sf-ask-skeleton" aria-hidden="true"><span></span><span></span><span></span></div>
+			</div>`;
+		}
+
 		render_question(question) {
 			return $(`<div class="sf-ask-turn"><div class="sf-ask-q">${esc(question)}</div></div>`).appendTo(this.$thread);
 		}

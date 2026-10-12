@@ -40,6 +40,8 @@ spice_facility.ai.strings = {
 		send: __("Ask"),
 		disclaimer: __("AI answers can be wrong. Check important information."),
 		thinking: __("Thinking…"),
+		queued: __("Waiting to start…"),
+		elapsed: (seconds) => __("{0} s", [seconds]),
 		provider: __("Model"),
 		cloud_note: __("Cloud models see only your question and field names — never patient data."),
 		local_note: __("Runs on this server."),
