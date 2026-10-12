@@ -106,13 +106,14 @@ test("the floating button opens Ask Data on a record, with that record as contex
 
 test("a chat downloads as a PDF under the chosen name, with or without the questions", async ({ page }) => {
 	await openAskData(page);
-	await expect(page.locator(".sf-ask-print")).toBeDisabled(); // nothing to print in a new chat
-	await ask(page, "How many encounters");
+	await ask(page, q("Print me"));
 	await expect(lastAnswer(page).locator(".sf-ask-kpi")).toBeVisible();
 	await ask(page, "Encounters by department");
 	await expect(lastAnswer(page).locator(".sf-ask-title")).toContainText("(fake)");
 
-	await page.locator(".sf-ask-print").click();
+	const row = page.locator(".sf-ask-thread-row", { hasText: q("Print me") });
+	await row.hover();
+	await row.locator(".sf-ask-thread-print").click();
 	const dialog = page.getByRole("dialog").filter({ hasText: "Include questions" });
 	await dialog.locator('input[data-fieldname="filename"]').fill("Ward report");
 	await dialog.locator('input[data-fieldname="include_questions"]').uncheck();

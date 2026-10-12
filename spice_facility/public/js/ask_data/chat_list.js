@@ -31,7 +31,8 @@ frappe.provide("spice_facility.ai.ask");
 			const html = [...groups].map(([name, items]) => `<div class="sf-ask-threads-group">${esc(name)}</div>
 				${items.map((t) => `<div class="sf-ask-thread-row ${t.thread === this.thread_id ? "active" : ""}">
 					<button class="sf-ask-thread-item" data-thread="${esc(t.thread)}" title="${esc(t.title)}">${esc(t.title)}</button>
-					<button class="sf-ask-thread-del" data-thread="${esc(t.thread)}" title="${esc(S.delete_chat)}" aria-label="${esc(S.delete_chat)}">${icon("trash-2")}</button>
+					<button class="sf-ask-thread-act sf-ask-thread-print" data-thread="${esc(t.thread)}" title="${esc(S.download_pdf)}" aria-label="${esc(S.download_pdf)}">${icon("printer")}</button>
+					<button class="sf-ask-thread-act sf-ask-thread-del" data-thread="${esc(t.thread)}" title="${esc(S.delete_chat)}" aria-label="${esc(S.delete_chat)}">${icon("trash-2")}</button>
 				</div>`).join("")}`).join("");
 			this.$root.find(".sf-ask-threads").html(html || `<div class="sf-ask-threads-empty">${esc(S.no_threads)}</div>`);
 		},
@@ -113,17 +114,9 @@ frappe.provide("spice_facility.ai.ask");
 			}
 		},
 
-		// ─── download the open chat as a PDF ─────────────────────────────────
-		print_button() {
-			const label = this.S.download_pdf;
-			return `<button class="btn btn-xs btn-default sf-ask-icon-btn sf-ask-print" title="${esc(label)}" aria-label="${esc(label)}"
-				${this.thread_id ? "" : "disabled"}>${icon("printer")}</button>`;
-		},
-
-		print_chat() {
+		// ─── download a chat as a PDF (the printer icon on its row) ───────────
+		print_chat(thread) {
 			const S = this.S;
-			if (!this.thread_id) return;
-			const thread = this.thread_id;
 			const today = frappe.datetime.str_to_user(frappe.datetime.get_today());
 			// The chat's title is its first question: offer it as the name only while questions are included.
 			const title = (this.threads || []).find((t) => t.thread === thread)?.title;
@@ -154,7 +147,6 @@ frappe.provide("spice_facility.ai.ask");
 
 		set_thread_id(thread_id) {
 			this.thread_id = thread_id;
-			this.$root?.find(".sf-ask-print").prop("disabled", !thread_id);
 			try {
 				if (thread_id) sessionStorage.setItem(store_key(), thread_id);
 				else sessionStorage.removeItem(store_key());
