@@ -107,10 +107,9 @@ def _secret(settings, fieldname):
 
 
 def fake_provider_allowed() -> bool:
-	"""Both switches, so a test or dev site that merely allows tests never gets it by accident."""
+	"""Both switches, set on the site itself, so a test or dev site that merely allows tests never gets it by
+	accident (no environment fallback: a variable on a bench would reach every site on it)."""
 	flag = frappe.conf.get(FAKE_FLAG)
-	if flag is None:
-		flag = os.environ.get(FAKE_FLAG.upper())
 	return bool(frappe.conf.get("allow_tests")) and str(flag or "").strip().lower() in ("1", "true", "yes", "on")
 
 

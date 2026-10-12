@@ -1,6 +1,7 @@
 """A scripted model for end-to-end tests: answers Ask Data's planning calls from a small table, without a network.
 
-Configured only when config.fake_provider_allowed() (a site that allows tests and sets spice_ai_fake_provider).
+Configured only when config.fake_provider_allowed() (a site that allows tests and sets spice_ai_fake_provider in
+its site config).
 Questions containing SLOW_MARKER wait SLOW_SECONDS while planning, so a test can stop a question that is running.
 """
 

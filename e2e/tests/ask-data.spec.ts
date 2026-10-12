@@ -2,7 +2,21 @@
 // keyword, and a question containing "[slow]" keeps planning for 20 s so it can be stopped while running.
 import { expect, test, type Page } from "@playwright/test";
 
-const SLOW_PLANNING_MS = 20_000;
+const SLOW_PLANNING_MS = 20_000; // fake.py SLOW_SECONDS
+// Questions carry a per-run suffix so a retry never meets the chats an earlier attempt left behind.
+const RUN = Date.now().toString(36);
+const q = (text: string) => `${text} #${RUN}`;
+
+// Status of the open chat's latest question, read through the same API the page uses.
+async function lastStatus(page: Page) {
+	return page.evaluate(async () => {
+		// null until the new chat has its id (the ask request is still in flight)
+		const thread = sessionStorage.getItem(`spice_ai_thread::${frappe.session.user}`);
+		if (!thread) return null;
+		const turns = await frappe.xcall("spice_facility.api.talk_to_data.thread", { thread });
+		return turns[turns.length - 1]?.status ?? null;
+	});
+}
 
 async function openAskData(page: Page) {
 	await page.goto("/desk/ask-data");
@@ -34,16 +48,17 @@ test("answers with a card, the model tag and a Sources panel", async ({ page }) 
 test("a running question can be stopped, stays stopped, and can be resent", async ({ page }) => {
 	test.setTimeout(3 * SLOW_PLANNING_MS + 30_000);
 	await openAskData(page);
-	await ask(page, "Encounters by department [slow]");
+	await ask(page, q("Encounters by department [slow]"));
 	await expect(page.locator(".sf-ask-send.sf-stop")).toBeVisible();
-	await expect(page.locator(".sf-ask-pending-text")).toContainText("Thinking"); // the job is running
+	await expect.poll(() => lastStatus(page)).toBe("Running"); // the job has started, so its answer must be discarded
 
 	await page.locator(".sf-ask-send").click();
 	await expect(lastAnswer(page)).toHaveClass(/sf-ask-stopped/);
 	await expect(page.locator(".sf-ask-send.sf-stop")).toHaveCount(0);
 
-	// Let the job finish planning: its answer must be discarded, so the reopened chat still shows "Stopped."
+	// The job finishes planning after the stop: it must leave the question Stopped, with no answer.
 	await page.waitForTimeout(SLOW_PLANNING_MS + 5_000);
+	expect(await lastStatus(page)).toBe("Stopped");
 	await page.reload();
 	await expect(lastAnswer(page)).toHaveClass(/sf-ask-stopped/);
 
@@ -53,22 +68,22 @@ test("a running question can be stopped, stays stopped, and can be resent", asyn
 
 test("chats are listed, reopened, deleted, and the list can be hidden", async ({ page }) => {
 	await openAskData(page);
-	await ask(page, "How many encounters");
+	await ask(page, q("How many encounters"));
 	await expect(lastAnswer(page).locator(".sf-ask-kpi")).toBeVisible();
 	await page.locator(".sf-ask-new:visible").first().click();
-	await ask(page, "Lab tests by status");
+	await ask(page, q("Lab tests by status"));
 	await expect(lastAnswer(page).locator(".sf-ask-title")).toContainText("Lab Test");
 
 	const list = page.locator(".sf-ask-threads");
-	await expect(list).toContainText("How many encounters");
-	await list.locator(".sf-ask-thread-item", { hasText: "How many encounters" }).first().click();
-	await expect(page.locator(".sf-ask-q").first()).toHaveText("How many encounters");
+	await expect(list).toContainText(q("How many encounters"));
+	await list.locator(".sf-ask-thread-item", { hasText: q("How many encounters") }).click();
+	await expect(page.locator(".sf-ask-q").first()).toHaveText(q("How many encounters"));
 
-	const row = list.locator(".sf-ask-thread-row", { hasText: "Lab tests by status" }).first();
+	const row = list.locator(".sf-ask-thread-row", { hasText: q("Lab tests by status") });
 	await row.hover();
 	await row.locator(".sf-ask-thread-del").click();
 	await page.locator(".modal.show button", { hasText: "Yes" }).click();
-	await expect(list.locator(".sf-ask-thread-row", { hasText: "Lab tests by status" })).toHaveCount(0);
+	await expect(list.locator(".sf-ask-thread-row", { hasText: q("Lab tests by status") })).toHaveCount(0);
 
 	await page.locator(".sf-ask-side .sf-ask-side-toggle").click();
 	await expect(page.locator(".sf-ask")).not.toHaveClass(/sf-side-open/);

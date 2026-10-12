@@ -429,8 +429,7 @@ class TestFakeProvider(AITestCase):
 		from spice_facility.ai.config import FAKE, get_config
 
 		with patch.dict(frappe.conf, {"allow_tests": allow_tests, "spice_ai_fake_provider": flag}), \
-		     patch.dict(os.environ, {}, clear=False):
-			os.environ.pop("SPICE_AI_FAKE_PROVIDER", None)
+		     patch.dict(os.environ, {"SPICE_AI_FAKE_PROVIDER": "1"}):  # the environment must not count
 			config = get_config()
 			return config, config.provider(FAKE)
 
