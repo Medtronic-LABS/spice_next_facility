@@ -24,9 +24,24 @@
 	.fill { background: #5b6bd5; height: 8px; border-radius: 4px; }
 	.num { text-align: right; white-space: nowrap; font-weight: 600; }
 	.small { color: #6b7280; font-size: 9.5px; }
+	table.pie { width: 100%; margin: 6px 0; }
+	table.pie td { vertical-align: middle; }
+	.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+	.share { color: #6b7280; font-weight: 400; width: 52px; }
+	.chart { margin: 6px 0 2px; }
+	.legend { font-size: 10px; color: #4b5563; margin: 0 0 4px; }
 </style>
 </head>
 <body>
+	{%- macro table(t) -%}
+	<table class="data">
+		<tr>{% for column in t.columns %}<th>{{ column|e }}</th>{% endfor %}</tr>
+		{% for row in t.rows %}
+		<tr>{% for value in row %}<td>{{ value|e }}</td>{% endfor %}</tr>
+		{% endfor %}
+	</table>
+	{% if t.more %}<div class="small">{{ t.more|e }}</div>{% endif %}
+	{%- endmacro %}
 	<div class="doc-title">{{ title|e }}</div>
 	<div class="doc-meta">
 		{{ _("Ask Data chat") }} · {{ _("Exported by {0} on {1}").format(exported_by, exported_on)|e }}
@@ -51,14 +66,31 @@
 				</tr>
 				{% endfor %}
 			</table>
-			{% elif turn.visual and turn.visual.kind == "table" %}
-			<table class="data">
-				<tr>{% for column in turn.visual.columns %}<th>{{ column|e }}</th>{% endfor %}</tr>
-				{% for row in turn.visual.rows %}
-				<tr>{% for value in row %}<td>{{ value|e }}</td>{% endfor %}</tr>
-				{% endfor %}
+			{% elif turn.visual and turn.visual.kind == "pie" %}
+			<table class="pie">
+				<tr>
+					<td style="width: 190px">{{ turn.visual.svg }}</td>
+					<td>
+						<table class="data">
+							{% for item in turn.visual.legend %}
+							<tr>
+								<td><span class="swatch" style="background: {{ item.colour }}"></span>{{ item.label|e }}</td>
+								<td class="num">{{ item.value|e }}</td>
+								<td class="num share">{{ item.share|e }}</td>
+							</tr>
+							{% endfor %}
+						</table>
+					</td>
+				</tr>
 			</table>
-			{% if turn.visual.more %}<div class="small">{{ turn.visual.more|e }}</div>{% endif %}
+			{% elif turn.visual and turn.visual.kind == "chart" %}
+			<div class="chart">{{ turn.visual.svg }}</div>
+			{% if turn.visual.legend|length > 1 %}
+			<div class="legend">{% for item in turn.visual.legend %}<span class="swatch" style="background: {{ item.colour }}"></span>{{ item.label|e }}&nbsp;&nbsp; {% endfor %}</div>
+			{% endif %}
+			{% if turn.visual.table %}{{ table(turn.visual.table) }}{% endif %}
+			{% elif turn.visual and turn.visual.kind == "table" %}
+			{{ table(turn.visual) }}
 			{% endif %}
 
 			{% if turn.source %}<div class="small">{{ _("Source") }}: {{ turn.source|e }}</div>{% endif %}

@@ -12,7 +12,7 @@ from frappe.utils import cint, flt, now_datetime
 from frappe.utils.background_jobs import get_job
 from rq.exceptions import InvalidJobOperation, NoSuchJobError
 
-from spice_facility.ai import data_catalog, query
+from spice_facility.ai import data_catalog, pdf_charts, query
 from spice_facility.ai.config import ensure_ai_access, get_config
 from spice_facility.ai.providers.base import AIProviderError
 from spice_facility.ai.providers.registry import chat_provider
@@ -303,19 +303,44 @@ def _cell(row, column):
 	return str(value)
 
 
+def _pdf_table(table):
+	rows, columns = table.get("rows") or [], table.get("columns") or []
+	if not rows:
+		return None
+	return {"columns": [c["label"] for c in columns], "rows": [[_cell(r, c) for c in columns] for r in rows[:PDF_MAX_ROWS]],
+	        "more": _("First {0} of {1} rows").format(PDF_MAX_ROWS, len(rows)) if len(rows) > PDF_MAX_ROWS else None}
+
+
 def _pdf_visual(answer):
-	"""What the PDF shows under the text: ranked bars for groups, otherwise the answer's table (capped)."""
+	"""The answer's visual for print, chosen as the chat chooses it (answer_card.js visual_kind): pie / donut
+	slices, ranked bars for other groups, a line or column chart for trends, otherwise the table."""
 	table = answer.get("table") or {}
 	rows, columns = table.get("rows") or [], table.get("columns") or []
+	chart = answer.get("chart") or {}
+	labels, datasets, chart_type = chart.get("labels") or [], chart.get("datasets") or [], chart.get("type")
+	number = lambda v: frappe.format(v, {"fieldtype": "Float"})  # noqa: E731
+
+	if answer.get("kind") == "groups" and chart_type in ("pie", "donut") and datasets:
+		values = datasets[0].get("values") or []
+		total = sum(flt(v) for v in values)
+		svg = pdf_charts.pie(values, donut=chart_type == "donut")
+		if svg:
+			return {"kind": "pie", "svg": svg, "legend": [
+				{"label": label, "colour": pdf_charts.colour(i), "value": number(v),
+				 "share": f"{flt(v) / total * 100:.1f}%"} for i, (label, v) in enumerate(zip(labels, values, strict=False))]}
 	if answer.get("kind") == "groups" and rows and len(columns) > 1:
 		top = max((flt(r.get("value")) for r in rows), default=0) or 1
 		return {"kind": "bars", "rows": [{"label": r.get("display", r.get("label")), "value": _cell(r, columns[1]),
 		                                  "width": round(flt(r.get("value")) / top * 100, 1)} for r in rows]}
-	if not rows:
-		return None
-	return {"kind": "table", "columns": [c["label"] for c in columns],
-	        "rows": [[_cell(r, c) for c in columns] for r in rows[:PDF_MAX_ROWS]],
-	        "more": _("First {0} of {1} rows").format(PDF_MAX_ROWS, len(rows)) if len(rows) > PDF_MAX_ROWS else None}
+	if answer.get("kind") == "series" and len(labels) > 1 and datasets:
+		draw = pdf_charts.columns if chart_type == "bar" else pdf_charts.line
+		svg = draw(labels, datasets)
+		if svg:
+			# on paper there is no hover: the values print under the chart
+			return {"kind": "chart", "svg": svg, "table": _pdf_table(table),
+			        "legend": [{"label": d.get("name"), "colour": pdf_charts.colour(i)} for i, d in enumerate(datasets)]}
+	table_part = _pdf_table(table)
+	return {"kind": "table", **table_part} if table_part else None
 
 
 def _names_a_question(filename, rows):

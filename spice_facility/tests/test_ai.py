@@ -501,6 +501,58 @@ class TestChatPdf(AITestCase):
 		self.assertTrue(bytes(frappe.local.response["filecontent"]).startswith(b"%PDF"))
 
 
+class TestPdfCharts(IntegrationTestCase):
+	"""Every visual the chat draws has a printed form in the PDF."""
+
+	def test_pie_and_donut(self):
+		from spice_facility.ai import pdf_charts
+
+		svg = str(pdf_charts.pie([3, 1, 0, 2]))
+		self.assertEqual(svg.count("<path"), 3)  # the zero slice is skipped
+		self.assertIn("<circle", str(pdf_charts.pie([5], donut=False)))  # one slice is a whole disc
+		self.assertEqual(str(pdf_charts.pie([1, 1], donut=True)).count("<circle"), 1)  # the hole
+		self.assertIsNone(pdf_charts.pie([0, 0]))
+
+	def test_line_and_columns_escape_labels_and_round_the_axis(self):
+		from spice_facility.ai import pdf_charts
+
+		svg = str(pdf_charts.line(["<b>Jan</b>", "Feb"], [{"name": "A", "values": [3, 7]}]))
+		self.assertIn("&lt;b&gt;Jan", svg)
+		self.assertNotIn("<b>", svg)
+		self.assertIn("<polyline", svg)
+		self.assertIn(">10<", svg)  # 7 rounds up to an axis top of 10
+		cols = str(pdf_charts.columns(["Jan", "Feb"], [{"name": "A", "values": [1, 2]}, {"name": "B", "values": [2, 0]}]))
+		self.assertEqual(cols.count("<rect"), 4)
+		self.assertIsNone(pdf_charts.line([], []))
+
+	def test_each_answer_kind_gets_the_visual_the_chat_shows(self):
+		from spice_facility.api.talk_to_data import _pdf_visual
+
+		table = {"columns": [{"label": "Status", "field": "label", "type": "Data"},
+		                     {"label": "Count", "field": "value", "type": "Float"}],
+		         "rows": [{"label": "Open", "value": 3}, {"label": "Closed", "value": 1}]}
+		chart = {"labels": ["Open", "Closed"], "datasets": [{"name": "Count", "values": [3, 1]}]}
+		pie = _pdf_visual({"kind": "groups", "chart": {**chart, "type": "pie"}, "table": table})
+		self.assertEqual(pie["kind"], "pie")
+		self.assertEqual([i["share"] for i in pie["legend"]], ["75.0%", "25.0%"])
+		self.assertEqual(_pdf_visual({"kind": "groups", "chart": {**chart, "type": "donut"}, "table": table})["kind"], "pie")
+		self.assertEqual(_pdf_visual({"kind": "groups", "chart": {**chart, "type": "bar"}, "table": table})["kind"], "bars")
+
+		series = {"labels": ["2026-08", "2026-09", "2026-10"], "datasets": [{"name": "Count", "values": [1, 4, 2]}]}
+		series_table = {"columns": [{"label": "Period", "field": "label", "type": "Data"},
+		                            {"label": "Count", "field": "s0", "type": "Float"}],
+		                "rows": [{"label": p, "s0": v} for p, v in zip(series["labels"], [1, 4, 2], strict=True)]}
+		line = _pdf_visual({"kind": "series", "chart": {**series, "type": "line"}, "table": series_table})
+		self.assertEqual(line["kind"], "chart")
+		self.assertIn("<polyline", str(line["svg"]))
+		self.assertEqual(len(line["table"]["rows"]), 3)  # values print under the chart
+		cols = _pdf_visual({"kind": "series", "chart": {**series, "type": "bar"}, "table": series_table})
+		self.assertIn("<rect", str(cols["svg"]))
+		single = _pdf_visual({"kind": "series", "chart": {"labels": ["2026-10"], "datasets": [{"name": "Count", "values": [5]}],
+		                                                  "type": "line"}, "table": series_table})
+		self.assertEqual(single["kind"], "table")
+
+
 class TestSummaryBlockStates(AITestCase):
 	def test_switched_off_summaries_are_a_state_not_an_error(self):
 		from spice_facility.api import ai_summary
@@ -539,7 +591,7 @@ class TestFakeProvider(AITestCase):
 		from spice_facility.ai.providers.fake import SCRIPT, FakeProvider
 
 		fake = FakeProvider(self._providers(allow_tests=1, flag=1)[1])
-		for keyword, (dataset_name, _group, _output) in SCRIPT:
+		for keyword, (dataset_name, _group, _output, _bucket) in SCRIPT:
 			dataset = data_catalog.get(dataset_name)
 			messages = [{"role": "user", "content": f"Question: {keyword or 'anything'}"}]
 			self.assertEqual(fake.complete_json("", messages, {"properties": {"dataset": {}}})["dataset"], dataset_name)
