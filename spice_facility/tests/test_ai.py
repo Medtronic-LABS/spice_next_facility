@@ -17,6 +17,7 @@ from spice_facility.ai.providers.gemini import EMPTY_ENUM, THINKING_ALLOWANCE, G
 from spice_facility.ai.summary_context import build_context, context_hash
 from spice_facility.ai.talk_to_data import (
 	answer_data,
+	cited_records,
 	implicit_scope,
 	keep_known_links,
 	resolve_page,
@@ -134,6 +135,162 @@ class TestCatalogAndQuery(AITestCase):
 		text = keep_known_links("See [[Lab Test:LT-1]] and [[Patient:Somebody]]", {"Lab Test:LT-1"})
 		self.assertEqual(text, "See [[Lab Test:LT-1]] and Somebody")
 
+	def test_source_parts_match_the_one_line_description(self):
+		dataset = data_catalog.get("Patient Appointment")
+		spec = query.validate({**GROUP_SPEC, "group_by": "department", "date_range": {"preset": "this_month"},
+		                       "filters": [{"field": "status", "op": "=", "value": "Open"}]}, dataset, 50)
+		parts = query.describe_parts(spec, dataset, ["Patient = X (this page)"])
+		self.assertEqual((parts["doctype"], parts["aggregate"], parts["scope"]), ("Patient Appointment", "count", ["Patient = X (this page)"]))
+		self.assertEqual(len(parts["filters"]), 1)
+		self.assertTrue(parts["period_from"] and parts["period_to"])
+		self.assertEqual(query.describe(spec, dataset, ["Patient = X (this page)"]), " · ".join(
+			[parts["dataset"], parts["measure"], parts["group_by"], parts["filters"][0], parts["period"], parts["scope"][0]]))
+
+	def test_record_sources_list_the_page_and_cited_records_once(self):
+		patient = any_patient()
+		page = {"doctype": "Patient", "name": patient.name}
+		text = "Seen in [[Patient Encounter:SF-TEST-ENC-1]] and [[Patient Encounter:SF-TEST-ENC-1]]; [[Lab Test:NO-SUCH-TEST]]."
+		sources = cited_records(text, page)
+		self.assertEqual([(s["doctype"], s["name"]) for s in sources],
+		                 [("Patient", patient.name), ("Patient Encounter", "SF-TEST-ENC-1")])
+		self.assertEqual(sources[0]["label"], patient.patient_name)
+
+	def test_get_answer_returns_when_it_was_asked_and_how_long_it_took(self):
+		from spice_facility.api.talk_to_data import get_answer
+
+		log = frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "question": "How many?",
+		                      "status": "Answered", "duration_ms": 1234,
+		                      "answer_json": json.dumps({"mode": "data", "text": "3"})}).insert(ignore_permissions=True)
+		data = get_answer(log.name)
+		self.assertEqual((data["duration_ms"], str(data["asked_on"])), (1234, str(log.creation)))
+
+	def test_record_sources_ignore_unknown_doctypes(self):
+		self.assertEqual(cited_records("[[No Such Doctype:No Such Doctype]]", None), [])
+
+	def test_group_total_counts_every_row_not_just_the_charted_groups(self):
+		dataset = data_catalog.get("Patient Encounter")
+		spec = query.validate(GROUP_SPEC, dataset, 1)  # keep only the top group
+		result = query.execute(spec, dataset)
+		self.assertEqual(len(result["labels"]), 1)
+		self.assertEqual(result["total"], result["rows_read"])
+		self.assertEqual(query.present(result, spec, dataset)["total"], result["rows_read"])
+
+	def test_no_total_when_the_rows_were_capped(self):
+		dataset = data_catalog.get("Patient Encounter")
+		result = query.execute(query.validate(GROUP_SPEC, dataset, 50), dataset, max_rows=1)
+		self.assertTrue(result["truncated"])
+		self.assertNotIn("total", result)
+
+	def _query_log(self, status):
+		return frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "question": "How many?",
+		                       "status": status}).insert(ignore_permissions=True)
+
+	def test_stop_marks_a_queued_question_stopped_and_the_job_then_does_nothing(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Queued")
+		self.assertEqual(api.stop(log.name)["status"], "Stopped")
+		with patch("spice_facility.api.talk_to_data.run_question", side_effect=AssertionError("must not run")), \
+		     patch.object(frappe.db, "commit"):  # run() commits in a worker; keep the test's transaction
+			api.run(log.name)
+		self.assertEqual(frappe.db.get_value("SPICE AI Query Log", log.name, "status"), "Stopped")
+
+	def test_an_answer_that_arrives_after_stop_is_discarded(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Queued")
+
+		def answer_then_find_it_stopped(*_args, **_kwargs):
+			frappe.db.set_value("SPICE AI Query Log", log.name, "status", "Stopped")
+			return {"mode": "data", "text": "3"}, {"mode": "Data"}
+
+		with patch("spice_facility.api.talk_to_data.run_question", side_effect=answer_then_find_it_stopped), \
+		     patch.object(frappe.db, "commit"):
+			api.run(log.name)
+		row = frappe.db.get_value("SPICE AI Query Log", log.name, ["status", "answer_json"], as_dict=True)
+		self.assertEqual((row.status, row.answer_json), ("Stopped", None))
+
+	def test_threads_group_a_users_questions_and_hide_other_users(self):
+		from spice_facility.api import talk_to_data as api
+
+		mine = frappe.generate_hash(length=16)
+		for question in ("First question", "Follow-up"):
+			frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "thread": mine,
+			                "question": question, "status": "Answered"}).insert(ignore_permissions=True)
+		theirs = frappe.generate_hash(length=16)
+		frappe.get_doc({"doctype": "SPICE AI Query Log", "user": "Guest", "thread": theirs,
+		                "question": "Someone else's", "status": "Answered"}).insert(ignore_permissions=True)
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"):
+			listed = {t["thread"]: t for t in api.threads()}
+			self.assertEqual((listed[mine]["title"], listed[mine]["turns"]), ("First question", 2))
+			self.assertNotIn(theirs, listed)
+			self.assertEqual([t["question"] for t in api.thread(mine)], ["First question", "Follow-up"])
+			self.assertEqual(api.thread(theirs), [])
+
+	def test_a_question_from_before_threads_opens_as_its_own_chat(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Answered")
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"):
+			self.assertIn(log.name, {t["thread"] for t in api.threads()})
+			self.assertEqual([t["log"] for t in api.thread(log.name)], [log.name])
+
+	def test_deleting_a_chat_hides_it_but_keeps_the_audit_record(self):
+		from spice_facility.api import talk_to_data as api
+
+		chat = frappe.generate_hash(length=16)
+		log = frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "thread": chat,
+		                      "question": "To delete", "status": "Answered"}).insert(ignore_permissions=True)
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"):
+			self.assertEqual(api.delete_thread(chat)["deleted"], 1)
+			self.assertNotIn(chat, {t["thread"] for t in api.threads()})
+			self.assertEqual(api.thread(chat), [])
+		self.assertTrue(frappe.db.exists("SPICE AI Query Log", log.name))
+
+	def test_thread_ids_are_validated(self):
+		from spice_facility.api import talk_to_data as api
+
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), self.assertRaises(frappe.ValidationError):
+			api.thread("x' or '1'='1")
+
+	def test_a_second_stop_of_an_already_cancelled_job_is_fine(self):
+		from rq.exceptions import InvalidJobOperation
+
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Queued")
+		job = MagicMock()
+		job.cancel.side_effect = InvalidJobOperation("already cancelled")
+		with patch("spice_facility.api.talk_to_data.get_job", return_value=job):
+			self.assertEqual(api.stop(log.name)["status"], "Stopped")
+
+	def test_a_follow_up_in_a_chat_from_before_threads_keeps_its_first_question(self):
+		from spice_facility.api import talk_to_data as api
+
+		old = self._query_log("Answered")  # no thread: its chat key is its own name
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
+		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"), \
+		     patch("spice_facility.api.talk_to_data.chat_provider", return_value=FakeProvider("Gemini", False)), \
+		     patch("spice_facility.api.talk_to_data.frappe.enqueue"):
+			self.assertEqual(api.ask("And per month?", thread=old.name)["thread"], old.name)
+			turns = api.thread(old.name)
+			self.assertEqual([t["question"] for t in turns], ["How many?", "And per month?"])
+			# the chosen model is logged when the question is asked, and comes back with the chat
+			self.assertEqual((turns[1]["provider"], turns[1]["model"]), ("Gemini", "Gemini-test"))
+			self.assertEqual(api.delete_thread(old.name)["deleted"], 2)
+			self.assertNotIn(old.name, {t["thread"] for t in api.threads()})
+
+	def test_stop_leaves_a_finished_question_alone(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Answered")
+		self.assertEqual(api.stop(log.name)["status"], "Answered")
+
+	def test_record_sources_leave_out_records_the_user_cannot_read(self):
+		patient = any_patient()
+		with patch("spice_facility.ai.talk_to_data.frappe.has_permission", return_value=False):
+			self.assertEqual(cited_records("[[Patient Encounter:SF-TEST-ENC-1]]", {"doctype": "Patient", "name": patient.name}), [])
+
 
 class TestDataPolicy(AITestCase):
 	def test_cloud_planner_never_receives_patient_values(self):
@@ -160,6 +317,7 @@ class TestDataPolicy(AITestCase):
 			answer, meta = run_question("When was the last HbA1c?", "Claude", {"doctype": "Patient", "name": patient.name})
 		self.assertEqual(meta["mode"], "Record")
 		self.assertEqual(answer["text"], "Last HbA1c was 8.2%.")
+		self.assertEqual(answer["sources"][0]["name"], patient.name)
 		self.assertNotIn(patient.patient_name, " ".join(cloud.sent))
 
 
@@ -172,6 +330,7 @@ class TestWithoutLocalModel(AITestCase):
 		self.assertIsNone(answer["narrator"])
 		self.assertTrue(answer["text"])
 		self.assertIn("chart", answer)
+		self.assertEqual(answer["source"]["doctype"], "Patient Encounter")
 
 	def test_summaries_switch_off_without_a_local_model(self):
 		from spice_facility.ai.config import get_config

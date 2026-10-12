@@ -231,7 +231,12 @@ def execute(spec, dataset, scope=None, max_rows=5000):
 	order = f"{dataset['date_field']} desc" if dataset["date_field"] else "creation desc"
 	rows = frappe.get_list(doctype, filters=filters, fields=sorted(wanted), order_by=order, limit_page_length=max_rows)
 	result = aggregate(rows, spec, dataset)
-	result.update({"rows_read": len(rows), "truncated": len(rows) >= max_rows, "filters": filters})
+	truncated = len(rows) >= max_rows
+	result.update({"rows_read": len(rows), "truncated": truncated, "filters": filters})
+	agg = spec["measure"]["agg"]
+	if result["kind"] in ("groups", "series") and agg in ("count", "sum") and not truncated:
+		# Over every row read, not just the groups/series kept for the chart (those are cut to spec["limit"]).
+		result["total"] = _measure(rows, agg, spec["measure"]["field"])
 	return result
 
 
@@ -310,6 +315,8 @@ def present(result, spec, dataset):
 	doctype, base = dataset["doctype"], result["filters"]
 	group, bucket = spec["group_by"], spec["time_bucket"]
 	out = {"kind": result["kind"], "list_route": {"doctype": doctype, "options": route_options(base)}}
+	if result.get("total") is not None:
+		out["total"] = result["total"]
 
 	def drill(label=None, bucket_label=None):
 		extra = list(base)
@@ -351,19 +358,28 @@ def present(result, spec, dataset):
 	return out
 
 
-def describe(spec, dataset, scope_labels=()):
-	"""The plan in words, for "How I got this"."""
-	parts = [f"{dataset['label']}"]
+def describe_parts(spec, dataset, scope_labels=()):
+	"""The plan in words, piece by piece, for the answer's Sources panel."""
 	m = spec["measure"]
-	parts.append(_("count of records") if m["agg"] == "count" else f"{m['agg']} of {dataset['measures'].get(m['field'], m['field'])}")
-	if spec["group_by"]:
-		parts.append(_("grouped by {0}").format(dataset["fields"][spec["group_by"]]["label"]))
-	if spec["time_bucket"] != "none":
-		parts.append(_("per {0}").format(spec["time_bucket"]))
-	for f in spec["filters"]:
-		parts.append(f"{dataset['fields'][f['field']]['label']} {f['op']} {f['value']}".strip())
 	bounds = preset_range(spec["date_range"]["preset"], spec["date_range"].get("from"), spec["date_range"].get("to"))
-	if bounds:
-		parts.append(_("{0} from {1} to {2}").format(dataset["fields"].get(dataset["date_field"], {}).get("label", ""), bounds[0], bounds[1]))
-	parts += list(scope_labels)
+	return {
+		"dataset": dataset["label"],
+		"doctype": dataset["doctype"],
+		"measure": _("count of records") if m["agg"] == "count" else f"{m['agg']} of {dataset['measures'].get(m['field'], m['field'])}",
+		"aggregate": m["agg"],
+		"group_by": _("grouped by {0}").format(dataset["fields"][spec["group_by"]]["label"]) if spec["group_by"] else None,
+		"bucket": _("per {0}").format(spec["time_bucket"]) if spec["time_bucket"] != "none" else None,
+		"filters": [f"{dataset['fields'][f['field']]['label']} {f['op']} {f['value']}".strip() for f in spec["filters"]],
+		"period": _("{0} from {1} to {2}").format(dataset["fields"].get(dataset["date_field"], {}).get("label", ""),
+		                                          bounds[0], bounds[1]) if bounds else None,
+		"period_from": str(bounds[0]) if bounds else None,
+		"period_to": str(bounds[1]) if bounds else None,
+		"scope": list(scope_labels),
+	}
+
+
+def describe(spec, dataset, scope_labels=()):
+	"""The plan in one line, for "How I got this"."""
+	d = describe_parts(spec, dataset, scope_labels)
+	parts = [d["dataset"], d["measure"], d["group_by"], d["bucket"], *d["filters"], d["period"], *d["scope"]]
 	return " · ".join(p for p in parts if p)
