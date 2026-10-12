@@ -14,7 +14,7 @@ frappe.provide("spice_facility.ai");
 
 	frappe.realtime.on("spice_ai_answer", (data) => {
 		const resolve = waiting.get(data.log);
-		if (resolve && ["Answered", "Failed"].includes(data.status)) resolve();
+		if (resolve && ["Answered", "Failed", "Stopped"].includes(data.status)) resolve();
 	});
 
 	const esc = (v) => frappe.utils.escape_html(v == null ? "" : String(v));
@@ -125,7 +125,8 @@ frappe.provide("spice_facility.ai");
 				<form class="sf-ask-form">
 					<div class="sf-ask-disclaimer">${esc(S.disclaimer)}</div>
 					<div class="sf-ask-composer">
-						<textarea class="sf-ask-input" rows="1" placeholder="${esc(S.placeholder)}" aria-label="${esc(S.placeholder)}"></textarea>
+						<textarea class="sf-ask-input" rows="1" placeholder="${esc(S.placeholder)}" aria-label="${esc(S.placeholder)}"
+							data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
 						<div class="sf-ask-composer-tools">
 							<span class="sf-ask-where"></span>
 							<select class="sf-ask-provider" title="${esc(S.provider)}" aria-label="${esc(S.provider)}">${options}</select>
@@ -136,7 +137,12 @@ frappe.provide("spice_facility.ai");
 			this.$thread = this.$root.find(".sf-ask-thread");
 			this.$root.find(".sf-ask-provider").on("change", (e) => { this.provider = e.target.value; this.render_note(); });
 			this.$root.find(".sf-ask-new").on("click", () => { this.history = []; this.save_history(); this.$thread.empty(); this.render_examples(); });
-			this.$root.find(".sf-ask-form").on("submit", (e) => { e.preventDefault(); this.ask(this.$root.find(".sf-ask-input").val()); });
+			// While a question is being answered the send button is a Stop button.
+			this.$root.find(".sf-ask-form").on("submit", (e) => {
+				e.preventDefault();
+				if (this.busy) this.stop();
+				else this.ask(this.$root.find(".sf-ask-input").val());
+			});
 			this.$root.find(".sf-ask-input").on("keydown", (e) => {
 				if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.ask(e.target.value); }
 			}).on("input", (e) => this.fit_input(e.target));
@@ -191,6 +197,8 @@ frappe.provide("spice_facility.ai");
 			question = (question || "").trim();
 			if (!question || this.busy) return;
 			this.busy = true;
+			const pending = (this.pending = { stopped: false, log: null, end: null });
+			this.set_sending(true);
 			this.fit_input(this.$root.find(".sf-ask-input").val("").get(0));
 			this.$root.find(".sf-ask-examples").empty();
 			const $turn = this.render_question(question);
@@ -204,8 +212,11 @@ frappe.provide("spice_facility.ai");
 					question, provider: this.provider, page: page ? JSON.stringify(page) : null, use_context: use_context ? 1 : 0,
 					history: JSON.stringify(this.history.slice(-2).map((t) => ({ question: t.question, spec: t.answer?.spec }))),
 				});
-				const result = await this.wait(log, (status) =>
-					$answer.find(".sf-ask-pending-text").text(status === "Queued" ? this.S.queued : this.S.thinking));
+				pending.log = log;
+				const result = pending.stopped
+					? (this.request_stop(log), { status: "Stopped" })
+					: await this.wait(log, (status) =>
+						$answer.find(".sf-ask-pending-text").text(status === "Queued" ? this.S.queued : this.S.thinking), pending);
 				const turn = { question, log, status: result.status, error: result.error, answer: result.answer,
 				               asked_on: result.asked_on, duration_ms: result.duration_ms };
 				this.history.push(turn);
@@ -217,27 +228,54 @@ frappe.provide("spice_facility.ai");
 			} finally {
 				clearInterval(tick);
 				this.busy = false;
+				this.pending = null;
+				this.set_sending(false);
 				this.scroll();
 			}
 		}
 
-		wait(log, on_status = () => {}) {
+		wait(log, on_status = () => {}, pending = null) {
 			return new Promise((resolve) => {
 				let done = false;
+				const end = (data) => {
+					done = true;
+					waiting.delete(log);
+					clearInterval(timer);
+					resolve(data);
+				};
 				const finish = async () => {
 					if (done) return;
 					const data = await frappe.xcall(`${API}.get_answer`, { log });
+					if (done) return;
 					on_status(data.status);
-					if (["Answered", "Failed"].includes(data.status)) {
-						done = true;
-						waiting.delete(log);
-						clearInterval(timer);
-						resolve(data);
-					}
+					if (["Answered", "Failed", "Stopped"].includes(data.status)) end(data);
 				};
+				if (pending) pending.end = () => !done && end({ status: "Stopped" });
 				waiting.set(log, finish);
 				const timer = setInterval(finish, POLL_MS);
 			});
+		}
+
+		// Stop the question in flight: the turn ends now; the server drops the queued job or discards its answer.
+		stop() {
+			const pending = this.pending;
+			if (!pending || pending.stopped) return;
+			pending.stopped = true;
+			pending.end?.();
+			if (pending.log) this.request_stop(pending.log);
+		}
+
+		request_stop(log) {
+			frappe.xcall(`${API}.stop`, { log }).catch(() => {
+				// the turn is already shown as stopped; a late answer is simply never displayed
+			});
+		}
+
+		set_sending(sending) {
+			const S = this.S;
+			this.$root.find(".sf-ask-send").toggleClass("sf-stop", sending)
+				.attr({ title: sending ? S.stop : S.send, "aria-label": sending ? S.stop : S.send })
+				.html(icon(sending ? "square" : "arrow-up"));
 		}
 
 		// ─── rendering ──────────────────────────────────────────────────────
@@ -266,6 +304,10 @@ frappe.provide("spice_facility.ai");
 		answer_html(turn) {
 			const S = this.S;
 			const a = turn.answer;
+			if (turn.status === "Stopped") {
+				return `<div class="sf-ask-answer sf-ask-stopped"><span class="sf-muted">${esc(S.stopped)}</span>
+					<button class="btn btn-xs btn-default sf-ask-resend">${icon("rotate-ccw")} ${esc(S.resend)}</button></div>`;
+			}
 			if (turn.status !== "Answered" || !a) {
 				return `<div class="sf-ask-answer"><div class="sf-ask-error">${esc(S.failed)} ${esc(turn.error || "")}</div></div>`;
 			}
@@ -366,6 +408,7 @@ frappe.provide("spice_facility.ai");
 		}
 
 		after_render($turn, turn) {
+			$turn.find(".sf-ask-resend").on("click", () => this.ask(turn.question));
 			const a = turn.answer;
 			if (!a) return;
 			const chart_el = $turn.find(".sf-ask-chart").get(0);

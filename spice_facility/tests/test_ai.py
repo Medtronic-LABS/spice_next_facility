@@ -181,6 +181,39 @@ class TestCatalogAndQuery(AITestCase):
 		self.assertTrue(result["truncated"])
 		self.assertNotIn("total", result)
 
+	def _query_log(self, status):
+		return frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "question": "How many?",
+		                       "status": status}).insert(ignore_permissions=True)
+
+	def test_stop_marks_a_queued_question_stopped_and_the_job_then_does_nothing(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Queued")
+		self.assertEqual(api.stop(log.name)["status"], "Stopped")
+		with patch("spice_facility.api.talk_to_data.run_question", side_effect=AssertionError("must not run")):
+			api.run(log.name)
+		self.assertEqual(frappe.db.get_value("SPICE AI Query Log", log.name, "status"), "Stopped")
+
+	def test_an_answer_that_arrives_after_stop_is_discarded(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Queued")
+
+		def answer_then_find_it_stopped(*_args, **_kwargs):
+			frappe.db.set_value("SPICE AI Query Log", log.name, "status", "Stopped")
+			return {"mode": "data", "text": "3"}, {"mode": "Data"}
+
+		with patch("spice_facility.api.talk_to_data.run_question", side_effect=answer_then_find_it_stopped):
+			api.run(log.name)
+		row = frappe.db.get_value("SPICE AI Query Log", log.name, ["status", "answer_json"], as_dict=True)
+		self.assertEqual((row.status, row.answer_json), ("Stopped", None))
+
+	def test_stop_leaves_a_finished_question_alone(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Answered")
+		self.assertEqual(api.stop(log.name)["status"], "Answered")
+
 	def test_record_sources_leave_out_records_the_user_cannot_read(self):
 		patient = any_patient()
 		with patch("spice_facility.ai.talk_to_data.frappe.has_permission", return_value=False):

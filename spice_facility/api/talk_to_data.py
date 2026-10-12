@@ -6,6 +6,7 @@ import json
 
 import frappe
 from frappe import _
+from frappe.utils.background_jobs import get_job
 
 from spice_facility.ai import data_catalog, query
 from spice_facility.ai.config import ensure_ai_access, get_config
@@ -18,6 +19,8 @@ EVENT = "spice_ai_answer"
 MAX_QUESTION = 500
 BUCKET_INTERVAL = {"day": "Daily", "week": "Weekly", "month": "Monthly", "year": "Yearly"}
 CHART_TYPE = {"bar": "Bar", "line": "Line", "pie": "Pie", "donut": "Donut"}
+IN_FLIGHT = ("Queued", "Running")
+STOPPED = "Stopped"
 
 
 def _own_log(name):
@@ -65,29 +68,56 @@ def ask(question: str, provider: str | None = None, page: str | None = None, use
 	                      "context_doctype": (page or {}).get("doctype") if use_context else None,
 	                      "context_name": (page or {}).get("name") if use_context else None}).insert(ignore_permissions=True)
 	frappe.enqueue("spice_facility.api.talk_to_data.run", queue="long", timeout=600, log=log.name, provider=provider,
-	               page=page, use_context=int(use_context), history=history, job_id=f"spice-ai-ask::{log.name}",
+	               page=page, use_context=int(use_context), history=history, job_id=_job_id(log.name),
 	               enqueue_after_commit=True)
 	return {"log": log.name, "status": "Queued"}
 
 
+def _job_id(log):
+	return f"spice-ai-ask::{log}"
+
+
+def _stopped(log):
+	return frappe.db.get_value(LOG, log, "status") == STOPPED
+
+
 def run(log, provider=None, page=None, use_context=1, history=None):
 	row = frappe.get_doc(LOG, log)
+	if row.status == STOPPED:
+		return
 	row.db_set("status", "Running")
 	try:
 		frappe.set_user(row.user)
 		answer, meta = run_question(row.question, provider, page, bool(use_context),
 		                            json.loads(history) if isinstance(history, str) and history else history)
+		if _stopped(log):
+			# The user stopped this question while the model was working: keep the log as Stopped, drop the answer.
+			return
 		row.db_set({"status": "Answered", "answer_json": json.dumps(answer, default=str),
 		            "spec": json.dumps(answer.get("spec")) if answer.get("spec") else None, **meta})
 	except (AIProviderError, query.QueryValidationError, frappe.ValidationError, frappe.PermissionError) as error:
-		row.db_set({"status": "Failed", "error": str(error)[:500]})
+		if not _stopped(log):
+			row.db_set({"status": "Failed", "error": str(error)[:500]})
 	except Exception as error:  # noqa: BLE001 — keep the chat responsive; full trace goes to the Error Log
-		row.db_set({"status": "Failed", "error": _("Unexpected error; see Error Log.")})
 		frappe.log_error(title="SPICE Ask Data failed", message=frappe.get_traceback())
+		if not _stopped(log):
+			row.db_set({"status": "Failed", "error": _("Unexpected error; see Error Log.")})
 	finally:
 		frappe.set_user("Administrator")
 	frappe.publish_realtime(EVENT, {"log": log, "status": frappe.db.get_value(LOG, log, "status")},
 	                        user=row.user, after_commit=True)
+
+
+@frappe.whitelist(methods=["POST"])
+def stop(log: str) -> dict:
+	"""Stop a question the user no longer wants: drop it from the queue, or discard the answer when it arrives."""
+	row = _own_log(log)
+	if row.status not in IN_FLIGHT:
+		return {"log": row.name, "status": row.status}
+	if row.status == "Queued" and (job := get_job(_job_id(row.name))):
+		job.cancel()
+	row.db_set("status", STOPPED)
+	return {"log": row.name, "status": STOPPED}
 
 
 @frappe.whitelist()

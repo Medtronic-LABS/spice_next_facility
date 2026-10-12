@@ -92,6 +92,10 @@
 .sf-ask-send { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--sf-accent); color: #fff; flex: none; }
 .sf-ask-send .icon { width: 18px; height: 18px; stroke: currentColor; }
 .sf-ask-send:disabled { opacity: .4; }
+.sf-ask-send.sf-stop { background: var(--text-color); color: var(--fg-color); }
+.sf-ask-send.sf-stop .icon { width: 14px; height: 14px; fill: currentColor; }
+.sf-ask-stopped { flex-direction: row; align-items: center; justify-content: space-between; }
+.sf-ask-resend { display: inline-flex; align-items: center; gap: 6px; }
 .sf-ask-drawer .sf-ask-provider { max-width: 130px; }
 .sf-ask-error { color: var(--red-600); }
 .sf-ask-empty { padding: 24px; text-align: center; color: var(--text-muted); }
