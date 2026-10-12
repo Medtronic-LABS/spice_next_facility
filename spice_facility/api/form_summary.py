@@ -35,6 +35,17 @@ def _related(doctype, filters, fields, order_by="creation desc", limit=ROW_CAP):
 	return frappe.get_list(doctype, filters=filters, fields=fields, order_by=order_by, limit_page_length=limit)
 
 
+# The patient's records counted on the Patient card, each opening its list: (doctype, filters beyond `patient`)
+PATIENT_RECORD_COUNTS = (("Patient Encounter", {"docstatus": 1}), ("Lab Test", {"docstatus": ["!=", 2]}),
+                         ("Vital Signs", {"docstatus": 1}))
+
+
+def _record_counts(patient):
+	"""How many of each record the patient has; doctypes the user cannot read are left out."""
+	return [{"doctype": doctype, "patient": patient, "count": frappe.db.count(doctype, {"patient": patient, **filters})}
+	        for doctype, filters in PATIENT_RECORD_COUNTS if frappe.has_permission(doctype, "read")]
+
+
 # ─── builders ───────────────────────────────────────────────────────────────
 
 
@@ -79,7 +90,7 @@ def patient_header(doc):
 		"allergies": allergies, "medications": medications,
 		"last_visit": last_visit[0] if last_visit else None, "next_visit": next_visit[0] if next_visit else None,
 		"policy": policy[0] if policy else None, "outstanding": outstanding, "currency": _currency(),
-		"admission": admission, "emergency": emergency
+		"admission": admission, "emergency": emergency, "records": _record_counts(doc.name),
 	}
 
 

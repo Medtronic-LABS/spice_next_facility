@@ -122,6 +122,7 @@ def _base_context(doc):
 	if doc.doctype == "Patient":
 		header = fs.patient_header(doc)
 		header.pop("currency", None)
+		header.pop("records", None)  # counts shown on the card; not clinical context (and would stale summaries)
 		return {**record, "patient": header, "active_diagnoses": active_diagnoses(doc.name),
 		        "vitals": fs._vitals(doc.name, limit=6),
 		        "recent_encounters": fs._related("Patient Encounter", {"patient": doc.name, "docstatus": 1},

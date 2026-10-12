@@ -73,12 +73,8 @@ HTML_BLOCKS = {
 FORMS = {
 	"Patient": [
 		html("sf_ai_summary", "SF AI Summary", "AI summary"),
+		# Record counts (encounters, lab tests, vitals) are on the header card itself, linking to their lists.
 		html("sf_patient_header", "SF Patient Header", "Clinical summary"),
-		row(
-			card("sf_card_encounters", "SF Patient Encounters", "Encounters", "Patient Encounter", "patient", SUBMITTED),
-			card("sf_card_lab_tests", "SF Patient Lab Tests", "Lab Tests", "Lab Test", "patient", NOT_CANCELLED),
-			card("sf_card_vitals", "SF Patient Vitals Recorded", "Vitals recorded", "Vital Signs", "patient", SUBMITTED),
-		),
 		html("sf_vitals_trend", "SF Vitals Trend", "Vitals trend"),
 		chart("sf_chart_visits", "SF Patient Encounters per Month", "Encounters per month", "Patient Encounter",
 		      "patient", based_on="encounter_date", filters=SUBMITTED),

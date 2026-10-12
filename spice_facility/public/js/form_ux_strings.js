@@ -10,6 +10,8 @@ spice_facility.form_ux.strings = {
 		none: __("None recorded"),
 		open: __("Open"),
 		today: __("Today"),
+		in_days: (n) => (n === 1 ? __("tomorrow") : __("in {0} days", [n])),
+		days_ago: (n) => (n === 1 ? __("yesterday") : __("{0} days ago", [n])),
 		days: (n) => __("{0} days", [n]),
 		minutes: (n) => __("{0} min", [n]),
 		of: (a, b) => __("{0} of {1}", [a, b]),
@@ -41,6 +43,16 @@ spice_facility.form_ux.strings = {
 		expires: (date) => __("expires {0}", [date]),
 		outstanding: __("Outstanding"),
 		no_insurance: __("Self-pay"),
+		age_years: (y) => __("{0} yrs", [y]),
+		age_year_months: (y, m) => __("{0} yr {1} mo", [y, m]),
+		age_months: (m) => __("{0} mo", [m]),
+		records_title: __("Records"),
+		// "{0}" is the count, shown in bold by the card
+		records: {
+			"Patient Encounter": (n) => (n === 1 ? __("{0} encounter", [n]) : __("{0} encounters", [n])),
+			"Lab Test": (n) => (n === 1 ? __("{0} lab test", [n]) : __("{0} lab tests", [n])),
+			"Vital Signs": (n) => (n === 1 ? __("{0} vitals record", [n]) : __("{0} vitals records", [n])),
+		},
 	},
 	encounter: {
 		previous: __("Previous encounters"),
