@@ -12,7 +12,7 @@ Facility (hospital) layer for SPICE on top of **Frappe Health** (`healthcare`, g
 | Demo data across every Health module | `demo/seed.py` | only when run explicitly |
 | **Overview tab** on 13 Health forms — related-record tables, number cards, charts and clinical summaries via frappe_theme `sva_ft` | `form_ux/` (spec → apply), `api/form_summary.py`, `public/js/form_ux*.js`, `public/css/form_ux.css` | install + every `bench migrate` |
 | Missing / broken Connections (e.g. Patient → Emergency Record, Practitioner → Inpatient Record on `primary_practitioner`) | `form_ux/connections.py` | install + every `bench migrate` |
-| **AI summary** of the open record (Patient, Encounter, Admission, Emergency, Therapy Plan) on the local model | `ai/summary_context.py`, `ai/clinical_flags.py`, `api/ai_summary.py`, `public/js/ai_summary.js` | on demand, cached |
+| **AI summary** of the open record (Patient, Encounter, Admission, Emergency, Therapy Plan) on the local model, or a cloud model the site allowed | `ai/summary_context.py`, `ai/clinical_flags.py`, `api/ai_summary.py`, `public/js/ai_summary.js` | on demand, cached |
 | **Ask Data** — talk to data with Ollama, Claude, OpenAI or Gemini; text + chart + table, page-aware floating chat | `ai/{data_catalog,query,talk_to_data}.py`, `api/talk_to_data.py`, page `ask-data`, `public/js/ask_data/` | on demand |
 | Read-only **MCP server** over the same governed queries | `api/mcp.py` | on demand |
 | frappe_theme fix: form-scoped Dashboard Charts break on the `{}` filter frappe_theme always sends | `overrides/frappe_theme.py` (`override_whitelisted_methods`) | always |
@@ -56,7 +56,15 @@ fields twice, so custom-field validation is skipped for it only while that defec
 - **Data policy:** cloud models receive only the question, dataset/field names and earlier query plans.
   Use a billing-enabled (paid) Google project for Gemini: free-tier prompts may be used to improve Google's
   products.
-  Records, results and page context go only to the local model, which writes every answer and summary.
+  Records, results and page context go only to the local model, which writes every answer and summary —
+  except that a site may tick **Allow cloud models to read patient records** (off by default) and pick
+  Claude, OpenAI or Gemini as **Summary provider**, recording the **agreement / policy reference** it rests on.
+  The summary context then leaves the server **pseudonymised** (`summary_context.pseudonymise`): identifying
+  fields dropped (name, contact, insurance, staff names); the patient's name, its parts and the record id
+  replaced by `[patient]` everywhere, notes included (Bengali/Devanagari aware); phone numbers and e-mails in
+  text masked; age in whole years (90+). Clinical facts, dates and sex remain. **Other people named in free-text
+  notes are not detected** — it is pseudonymisation, not anonymisation. A patient ticked **Keep out of cloud AI**
+  is never sent. Ask Data's record questions stay local-only.
 - **AI summary:** abnormal labs/vitals are flagged in code (`clinical_flags.py`) from each record's own
   normal ranges; a `must_mention` checklist keeps the small model on the important facts. Summaries are
   cached in `SPICE AI Summary` and marked stale when the record's data changes. Nothing is written into

@@ -1,5 +1,7 @@
 import frappe
+from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
+from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD
 from spice_facility.desk_navigation.apply import apply_navigation, remove_navigation
 from spice_facility.form_ux.apply import apply_form_ux, remove_form_ux
 from spice_facility.setup.fixes import apply_fixes
@@ -19,6 +21,7 @@ def after_install():
 	apply_navigation()
 	apply_form_ux()
 	fill_ai_settings_defaults()
+	ensure_ai_patient_fields()
 	seed_ai_roles()
 
 
@@ -27,6 +30,7 @@ def after_migrate():
 	apply_navigation()
 	apply_form_ux()
 	fill_ai_settings_defaults()
+	ensure_ai_patient_fields()
 	seed_ai_roles()
 
 
@@ -62,6 +66,16 @@ def fill_ai_settings_defaults():
 		if df.default is not None and stored.get(df.fieldname) is None:
 			frappe.db.set_single_value(AI_SETTINGS, df.fieldname, df.default)
 	frappe.clear_document_cache(AI_SETTINGS, AI_SETTINGS)
+
+
+def ensure_ai_patient_fields():
+	"""The patient's own choice to keep their records away from cloud AI models."""
+	create_custom_fields({"Patient": [{
+		"fieldname": CLOUD_OPT_OUT_FIELD, "fieldtype": "Check", "label": "Keep out of cloud AI",
+		"insert_after": "report_preference", "default": "0",
+		"description": "The patient asked that their records never be sent to cloud AI models (AI summaries then "
+		               "need the local model).",
+	}]}, update=True)
 
 
 def seed_ai_roles():

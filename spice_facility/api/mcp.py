@@ -15,7 +15,7 @@ import frappe
 from werkzeug.wrappers import Response
 
 from spice_facility.ai import data_catalog, query
-from spice_facility.ai.config import ensure_ai_access, get_config
+from spice_facility.ai.config import OLLAMA, ensure_ai_access, get_config
 from spice_facility.ai.providers.base import AIProviderError
 from spice_facility.ai.talk_to_data import run_question
 
@@ -50,7 +50,8 @@ def _run_query(dataset, spec):
 
 
 def _ask(question):
-	answer, _meta = run_question(question, get_config().summary_provider, None, False, None)
+	# Planned and answered on the local model, as the tool promises (the summary provider may be a cloud one).
+	answer, _meta = run_question(question, OLLAMA, None, False, None)
 	return {k: answer.get(k) for k in ("text", "how", "number", "table", "chart", "rows_read") if answer.get(k) is not None}
 
 
