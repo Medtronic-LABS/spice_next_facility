@@ -21,6 +21,11 @@ app_include_js = [
 	"/assets/spice_facility/js/form_ux.js",
 	"/assets/spice_facility/js/ai_strings.js",
 	"/assets/spice_facility/js/ai_summary.js",
+	# Ask Data: shared helpers, then the parts the view mixes in, then the view itself
+	"/assets/spice_facility/js/ask_data/shared.js",
+	"/assets/spice_facility/js/ask_data/answer_card.js",
+	"/assets/spice_facility/js/ask_data/chat_list.js",
+	"/assets/spice_facility/js/ask_data/composer.js",
 	"/assets/spice_facility/js/ask_data/ask_data_view.js",
 	"/assets/spice_facility/js/ask_data/floating_chat.js",
 ]

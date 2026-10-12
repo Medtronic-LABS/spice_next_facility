@@ -70,6 +70,11 @@ frappe.provide("spice_facility.ai");
 				host.innerHTML = H.empty(S.disabled);
 				return;
 			}
+			if (data.enabled === false) {
+				// no AI access: nothing to show; summaries switched off: say so once, quietly
+				host.innerHTML = data.reason === "access" ? "" : H.empty(S.disabled);
+				return;
+			}
 			const pending = data.pending || (live_status && ["Queued", "Running"].includes(live_status));
 			clearTimeout(host._sf_poll);
 			if (pending && hosts.get(key) === draw && host.isConnected) host._sf_poll = setTimeout(() => draw(), POLL_MS);
