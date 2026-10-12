@@ -56,8 +56,10 @@ build fails if a tag no longer matches its pinned commit). `BENCH_IMAGE` is pinn
 version change. Open a PR into `develop`, merge. That run builds the new base once (~30 min), every later run reuses it. Run the
 workflow manually with **rebuild_base** to rebuild it on demand.
 
-No local AI model runs here (`SPICE_AI_OLLAMA_ENABLED=0`): AI summaries are off; Ask Data works with
-Claude, OpenAI or Gemini, which see only the question and field names, and answers are written from the results.
+No local AI model runs here (`SPICE_AI_OLLAMA_ENABLED=0`): Ask Data works with Claude, OpenAI or Gemini, which
+see only the question and field names, and answers are written from the results. AI summaries are off unless a
+System Manager ticks **Allow cloud models to read patient records** and picks a cloud **Summary provider** in SPICE
+AI Settings (the record is sent without name, contact or insurance details — see the README's data policy).
 
 ### Trying the stack locally
 

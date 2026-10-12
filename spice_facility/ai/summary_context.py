@@ -8,6 +8,7 @@ underlying records change, not because the clock moved.
 
 import hashlib
 import json
+import re
 
 import frappe
 from frappe import _
@@ -158,6 +159,42 @@ def _stable(value):
 
 def context_hash(context):
 	return hashlib.sha256(json.dumps(_stable(context), sort_keys=True, default=str).encode()).hexdigest()
+
+
+# Direct identifiers a summary does not need. Removed before a record goes to a cloud model; clinical facts,
+# dates, age and sex stay. (Emergency context carries the patient's name as `patient`.)
+IDENTIFYING_KEYS = {"patient_name", "mobile", "phone", "email", "address", "policy", "policy_number"}
+PATIENT_PLACEHOLDER = "[patient]"
+MIN_NAME_PART = 3
+
+
+def patient_names(patient):
+	"""The patient's record id, full name and name parts: text a cloud model must not see."""
+	if not patient:
+		return []
+	row = frappe.db.get_value("Patient", patient, ["patient_name", "first_name", "middle_name", "last_name"], as_dict=True)
+	names = {patient, *(v for v in (row or {}).values() if v)}
+	return sorted((n for n in names if len(n) >= MIN_NAME_PART), key=len, reverse=True)
+
+
+def deidentify(context, names=()):
+	"""A copy of the context for a model outside this server: identifying fields dropped, and the patient's name
+	(which is often also the Patient record's id) replaced wherever it appears, notes included."""
+	pattern = re.compile(r"\b(?:" + "|".join(map(re.escape, names)) + r")\b", re.IGNORECASE) if names else None
+
+	def clean(value, parent=None):
+		if isinstance(value, list):
+			return [clean(item) for item in value]
+		if isinstance(value, dict):
+			out = {key: clean(inner, value) for key, inner in value.items() if key not in IDENTIFYING_KEYS}
+			if "emergency" in value and isinstance(value.get("patient"), str):
+				out.pop("patient", None)
+			return out
+		if isinstance(value, str) and pattern:
+			return pattern.sub(PATIENT_PLACEHOLDER, value)
+		return value
+
+	return clean(context)
 
 
 def serialise(context, max_chars):

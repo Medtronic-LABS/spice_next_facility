@@ -413,3 +413,63 @@ class TestProviderRetries(IntegrationTestCase):
 		result, request, sleep = self.request([MagicMock(status_code=400, text="bad", headers={})])
 		self.assertEqual(request.call_count, 1)
 		sleep.assert_not_called()
+
+
+class TestCloudSummaries(AITestCase):
+	"""A cloud model may write summaries only when the site opts in, and never sees direct identifiers."""
+
+	def settings(self, **values):
+		doc = frappe.get_doc("SPICE AI Settings")
+		doc.update({"summary_enabled": 1, "summary_provider": "Claude", "claude_enabled": 1,
+		            "anthropic_api_key": "key", "claude_model": "claude-test", "cloud_patient_data_allowed": 0, **values})
+		return doc
+
+	def test_a_cloud_summary_provider_needs_the_sites_consent(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "Allow cloud models"):
+			self.settings().validate()
+		self.settings(cloud_patient_data_allowed=1).validate()
+		with self.assertRaisesRegex(frappe.ValidationError, "enable Claude"):
+			self.settings(cloud_patient_data_allowed=1, claude_enabled=0).validate()
+
+	def test_summaries_run_on_a_consented_cloud_provider_without_a_local_model(self):
+		from spice_facility.ai.config import get_config
+		from spice_facility.ai.providers.registry import NoSummaryProvider, summary_provider
+
+		for field, value in {"summary_enabled": 1, "summary_provider": "Claude", "claude_enabled": 1,
+		                     "claude_model": "claude-test", "cloud_patient_data_allowed": 1}.items():
+			frappe.db.set_single_value("SPICE AI Settings", field, value)
+		frappe.conf.spice_ai_ollama_enabled = 0
+		frappe.clear_document_cache("SPICE AI Settings", "SPICE AI Settings")
+		try:
+			self.assertTrue(get_config().summary_enabled)
+			self.assertEqual(summary_provider().name, "Claude")
+			frappe.db.set_single_value("SPICE AI Settings", "cloud_patient_data_allowed", 0)
+			frappe.clear_document_cache("SPICE AI Settings", "SPICE AI Settings")
+			self.assertFalse(get_config().summary_enabled)
+			with self.assertRaises(NoSummaryProvider):
+				summary_provider()
+		finally:
+			frappe.conf.pop("spice_ai_ollama_enabled", None)
+			frappe.db.rollback()
+			frappe.clear_document_cache("SPICE AI Settings", "SPICE AI Settings")
+
+	def test_a_cloud_model_never_receives_direct_identifiers(self):
+		from spice_facility.api import ai_summary
+
+		patient = frappe.get_doc("Patient", any_patient())
+		patient.db_set({"mobile": "9000000001"})
+		for is_local, should_see_name in ((False, False), (True, True)):
+			model = FakeProvider("Claude" if not is_local else "Ollama", is_local, json_answers=[
+				{"headline": "h", "summary": "s", "alerts": [], "follow_up": []}])
+			row = frappe.get_doc({"doctype": "SPICE AI Summary", "reference_doctype": "Patient",
+			                      "reference_name": patient.name, "status": "Queued",
+			                      "requested_by": "Administrator"}).insert(ignore_permissions=True)
+			with patch("spice_facility.api.ai_summary.summary_provider", return_value=model), \
+			     patch("spice_facility.api.ai_summary._notify"):
+				ai_summary.run(row.name)
+			sent = " ".join(model.sent)
+			self.assertEqual(frappe.db.get_value("SPICE AI Summary", row.name, "status"), "Ready", sent[:200])
+			self.assertEqual(patient.patient_name in sent or patient.name in sent, should_see_name)
+			self.assertEqual("[patient]" in sent, not should_see_name)
+			self.assertEqual("9000000001" in sent, should_see_name)
+		frappe.db.rollback()

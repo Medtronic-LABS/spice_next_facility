@@ -4,17 +4,28 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 
-from spice_facility.ai.config import CLAUDE, GEMINI, KEY_FIELDS, LOCAL_PROVIDERS, OLLAMA, OPENAI, has_override
+from spice_facility.ai.config import (
+	CLAUDE,
+	GEMINI,
+	KEY_FIELDS,
+	LOCAL_PROVIDERS,
+	OLLAMA,
+	OPENAI,
+	PROVIDER_FIELD_PREFIX,
+	has_override,
+)
 
 GEMINI_HOST_SUFFIX = ".googleapis.com"
 
 
 class SPICEAISettings(Document):
 	def validate(self):
-		if self.summary_provider not in LOCAL_PROVIDERS:
-			frappe.throw(_("Summaries read patient records, so the summary provider must run locally."))
-		if not self.ollama_enabled and self.summary_enabled:
-			frappe.throw(_("AI summaries need the local model: enable Ollama or turn summaries off."))
+		summary_provider = self.summary_provider or OLLAMA
+		if summary_provider not in LOCAL_PROVIDERS and not self.cloud_patient_data_allowed:
+			frappe.throw(_("Summaries read patient records. To write them with {0}, tick \"Allow cloud models to read "
+			               "patient records\", or choose a local provider.").format(summary_provider))
+		if self.summary_enabled and not self.get(f"{PROVIDER_FIELD_PREFIX[summary_provider]}_enabled"):
+			frappe.throw(_("AI summaries need their provider: enable {0} or turn summaries off.").format(summary_provider))
 		for provider, enabled, model in (
 			(CLAUDE, self.claude_enabled, self.claude_model),
 			(OPENAI, self.openai_enabled, self.openai_model),

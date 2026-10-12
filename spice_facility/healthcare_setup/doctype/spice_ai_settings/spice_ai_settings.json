@@ -6,7 +6,7 @@
  "issingle": 1,
  "engine": "InnoDB",
  "creation": "2026-10-09 12:00:00.000000",
- "modified": "2026-10-12 21:06:52.784450",
+ "modified": "2026-10-12 22:04:04.033785",
  "modified_by": "Administrator",
  "owner": "Administrator",
  "field_order": [
@@ -56,6 +56,7 @@
   "floating_chat_enabled",
   "features_col",
   "summary_provider",
+  "cloud_patient_data_allowed",
   "chat_default_provider",
   "access_section",
   "allowed_roles",
@@ -354,9 +355,16 @@
    "fieldname": "summary_provider",
    "fieldtype": "Select",
    "label": "Summary provider",
-   "options": "Ollama",
+   "options": "Ollama\nClaude\nOpenAI\nGemini",
    "default": "Ollama",
-   "description": "Local providers only: summaries read patient records."
+   "description": "Summaries read patient records. Ollama keeps them on this server; a cloud provider also needs \u201cAllow cloud models to read patient records\u201d."
+  },
+  {
+   "fieldname": "cloud_patient_data_allowed",
+   "fieldtype": "Check",
+   "label": "Allow cloud models to read patient records",
+   "default": "0",
+   "description": "Lets a cloud summary provider receive the record's clinical data (diagnoses, results, vitals, medications). Name, mobile and insurance details are removed first. Turn on only under a data-processing agreement with the provider (for Gemini, a billing-enabled project) and your patients' consent policy."
   },
   {
    "fieldname": "chat_default_provider",
