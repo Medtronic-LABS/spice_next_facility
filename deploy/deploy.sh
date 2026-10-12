@@ -16,7 +16,14 @@ env_value() {
 }
 IMAGE_TAG="$(env_value IMAGE_TAG)"
 SITE_NAME="$(env_value SITE_NAME)"
-: "${IMAGE_TAG:?IMAGE_TAG missing from .env}" "${SITE_NAME:?SITE_NAME missing from .env}"
+DATA_DIR="$(env_value DATA_DIR)"
+: "${IMAGE_TAG:?IMAGE_TAG missing from .env}" "${SITE_NAME:?SITE_NAME missing from .env}" "${DATA_DIR:?DATA_DIR missing from .env}"
+
+# The database and sites/ must live on their own volume, never on the root disk.
+if ! mountpoint -q "${DATA_DIR}"; then
+	echo "[deploy] ${DATA_DIR} is not a mounted volume; refusing to start (see prepare-host.sh)" >&2
+	exit 1
+fi
 
 healthy() {
 	curl -fsS -H "Host: ${SITE_NAME}" "http://127.0.0.1:8000/api/method/ping" >/dev/null 2>&1

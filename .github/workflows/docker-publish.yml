@@ -382,6 +382,9 @@ jobs:
       cancel-in-progress: false
     env:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
+      # The separate EBS volume holding the database and sites/ (mounted by prepare-host.sh).
+      DATA_DIR: ${{ vars.DATA_DIR || '/srv/spice-data' }}
+      DATA_VOLUME_ID: ${{ vars.DATA_VOLUME_ID }}
       IMAGE: ${{ needs.build-test-publish.outputs.image }}
       IMAGE_TAG: ${{ needs.build-test-publish.outputs.tag }}
     steps:
@@ -427,6 +430,8 @@ jobs:
           [[ "${DEPLOY_USER}" =~ ^[a-z_][a-z0-9_-]*$ ]] || problems="${problems} DEPLOY_USER(plain user name)"
           [[ "${DEPLOY_PORT}" =~ ^[0-9]+$ ]] || problems="${problems} DEPLOY_PORT(number)"
           [[ "${DEPLOY_PATH}" =~ ^/[A-Za-z0-9._/-]+$ ]] || problems="${problems} DEPLOY_PATH(absolute path, plain characters)"
+          [[ "${DATA_DIR}" =~ ^/[A-Za-z0-9._/-]*[A-Za-z0-9._-]$ ]] || problems="${problems} DATA_DIR(absolute path, plain characters, not /)"
+          [[ -z "${DATA_VOLUME_ID}" || "${DATA_VOLUME_ID}" =~ ^vol-[0-9a-f]+$ ]] || problems="${problems} DATA_VOLUME_ID(vol-...)"
           [[ -z "${GHCR_PULL_USER}" || "${GHCR_PULL_USER}" =~ ^[A-Za-z0-9-]+$ ]] || problems="${problems} GHCR_PULL_USER(GitHub user name)"
           for name in SITE_NAME DOMAIN AWS_DEFAULT_REGION BACKUP_S3_BUCKET ALERT_WEBHOOK_URL SPICE_AI_ANTHROPIC_API_KEY SPICE_AI_OPENAI_API_KEY; do
             case "${!name}" in *"'"* | *$'\n'*) problems="${problems} ${name}(contains a quote or newline)" ;; esac
@@ -503,6 +508,7 @@ jobs:
           ADMIN_PASSWORD='${ADMIN_PASSWORD}'
           DB_ROOT_PASSWORD='${DB_ROOT_PASSWORD}'
           DB_TLS='off'
+          DATA_DIR='${DATA_DIR}'
           SPICE_AI_OLLAMA_ENABLED='0'
           SPICE_AI_ANTHROPIC_API_KEY='${SPICE_AI_ANTHROPIC_API_KEY}'
           SPICE_AI_OPENAI_API_KEY='${SPICE_AI_OPENAI_API_KEY}'
@@ -520,11 +526,12 @@ jobs:
           # shellcheck disable=SC2029
           ssh deploy-target "cd '${DEPLOY_PATH}' && chmod 600 .env.new && mv .env.new .env && chmod +x deploy.sh prepare-host.sh"
 
-      # Installs Docker + compose and adds swap on a fresh Ubuntu host; a no-op once the host is ready.
+      # Mounts the data volume, installs Docker + compose and adds swap on a fresh Ubuntu host; a no-op once
+      # the host is ready.
       - name: Prepare the host
         run: |
           # shellcheck disable=SC2029 # client-side expansion is intended; values are validated above
-          ssh deploy-target "'${DEPLOY_PATH}/prepare-host.sh'"
+          ssh deploy-target "DATA_DIR='${DATA_DIR}' DATA_VOLUME_ID='${DATA_VOLUME_ID}' '${DEPLOY_PATH}/prepare-host.sh'"
 
       # Only for a private GHCR package; the token travels on stdin.
       - name: Log in to GHCR on the host
