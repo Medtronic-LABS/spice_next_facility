@@ -321,6 +321,7 @@ jobs:
               redis-server /home/frappe/redis.conf --daemonize yes
               /usr/local/bin/site-setup.sh
               cd /home/frappe/frappe-bench
+              grep -q "\"encryption_key\"" sites/ci.localhost/site_config.json || { echo "site-setup left no encryption_key" >&2; exit 1; }
               bench --site ci.localhost set-config allow_tests true
               bench --site ci.localhost run-tests --app spice_facility
             '

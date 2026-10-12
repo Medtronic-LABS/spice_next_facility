@@ -45,6 +45,17 @@ else
 		--admin-password "${ADMIN_PASSWORD}"
 fi
 
+# Frappe creates the site's encryption key lazily, on the first encrypted value. Web and worker processes
+# each cache site_config for up to a minute, so two of them can create different keys and a value saved
+# through one (e.g. an AI provider's API key) cannot be decrypted by the other. Create it here, before any
+# of them start; an existing key is never replaced (it decrypts everything already stored).
+SITE_CONFIG="sites/${SITE_NAME}/site_config.json"
+if ! ./env/bin/python -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])).get("encryption_key") else 1)' "${SITE_CONFIG}"; then
+	echo "[site-setup] creating the site's encryption key"
+	bench --site "${SITE_NAME}" set-config encryption_key \
+		"$(./env/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+fi
+
 for app in ${APPS}; do
 	if bench --site "${SITE_NAME}" list-apps | awk '{print $1}' | grep -qx "${app}"; then
 		echo "[site-setup] ${app} already installed"
