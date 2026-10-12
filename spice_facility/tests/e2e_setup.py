@@ -12,7 +12,8 @@ import frappe
 from spice_facility.ai.config import SETTINGS, fake_provider_allowed
 from spice_facility.tests.test_ai import ensure_fixtures
 
-CHAT_SETTINGS = {"chat_enabled": 1, "floating_chat_enabled": 1}
+# A test site asks far more questions an hour than a person; reruns must not hit the per-user AI request limit.
+CHAT_SETTINGS = {"chat_enabled": 1, "floating_chat_enabled": 1, "rate_limit_per_hour": 1000}
 
 
 def prepare():
