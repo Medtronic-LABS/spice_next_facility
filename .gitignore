@@ -58,3 +58,9 @@ jspm_packages/
 deploy/.env
 deploy/.env.local
 .env
+
+# Ask Data e2e (Playwright)
+e2e/node_modules/
+e2e/.auth/
+e2e/test-results/
+e2e/playwright-report/

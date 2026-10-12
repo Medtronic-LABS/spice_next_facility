@@ -321,6 +321,283 @@ class TestDataPolicy(AITestCase):
 		self.assertNotIn(patient.patient_name, " ".join(cloud.sent))
 
 
+class TestHistoryNeverLeaks(AITestCase):
+	"""List-view filters and earlier plans must not carry patient values to a cloud planner."""
+
+	def _list_page(self):
+		return {"doctype": "Patient Encounter", "kind": "list", "label": "Patient Encounter",
+		        "filters": [["Patient Encounter", "patient_name", "=", TEST_PATIENT]]}
+
+	def test_list_filters_scope_the_answer_but_stay_out_of_the_plan(self):
+		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
+		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False):
+			answer = answer_data("Encounters by department", cloud, None, self._list_page(), True)
+		self.assertNotIn(TEST_PATIENT, json.dumps(answer["spec"]))
+		self.assertEqual(answer["scope_filters"], [{"field": "patient_name", "op": "=", "value": TEST_PATIENT}])
+		self.assertEqual(answer["rows_read"], frappe.db.count("Patient Encounter", {"patient_name": TEST_PATIENT}))
+
+	def test_a_cloud_planner_gets_earlier_plans_with_identifying_values_redacted(self):
+		earlier = {**GROUP_SPEC, "title": f"Encounters for {TEST_PATIENT}",
+		           "filters": [{"field": "patient_name", "op": "=", "value": TEST_PATIENT},
+		                       {"field": "status", "op": "=", "value": "Completed"}]}
+		history = [{"question": "Encounters for that patient", "spec": earlier, "provider": "Claude"}]
+		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
+		local = FakeProvider("Ollama", True, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
+		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False):
+			answer_data("And by department?", cloud, history, None, False)
+			answer_data("And by department?", local, history, None, False)
+		self.assertNotIn(TEST_PATIENT, " ".join(cloud.sent))
+		self.assertIn("Completed", " ".join(cloud.sent))
+		self.assertIn(TEST_PATIENT, " ".join(local.sent))  # a local planner may see the plan as it was
+
+	def test_a_question_first_put_to_a_local_model_is_never_forwarded_to_a_cloud_planner(self):
+		history = [{"question": f"Lab tests for {TEST_PATIENT}", "spec": GROUP_SPEC, "provider": "Ollama"}]
+		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
+		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False):
+			answer_data("And by month?", cloud, history, None, False)
+		self.assertNotIn(TEST_PATIENT, " ".join(cloud.sent))
+
+	def test_the_stored_plan_of_a_list_scoped_answer_has_no_list_values(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "question": "By department",
+		                      "status": "Queued", "thread": frappe.generate_hash(length=16)}).insert(ignore_permissions=True)
+		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
+		with patch("spice_facility.ai.talk_to_data.chat_provider", return_value=cloud), \
+		     patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False), \
+		     patch.object(frappe.db, "commit"):
+			api.run(log.name, page=self._list_page(), use_context=1)
+		row = frappe.db.get_value("SPICE AI Query Log", log.name, ["status", "spec"], as_dict=True)
+		self.assertEqual(row.status, "Answered")
+		self.assertNotIn(TEST_PATIENT, row.spec)
+
+	def test_a_deleted_chat_is_not_continued_and_its_turns_are_not_history(self):
+		from spice_facility.api import talk_to_data as api
+
+		chat = frappe.generate_hash(length=16)
+		frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "thread": chat, "hidden": 1,
+		                "question": "Deleted", "status": "Answered", "spec": json.dumps(GROUP_SPEC)}).insert(ignore_permissions=True)
+		self.assertIsNone(api._own_thread(chat))
+
+	def test_history_comes_from_the_users_own_answered_questions_in_the_chat(self):
+		from spice_facility.api import talk_to_data as api
+
+		chat = frappe.generate_hash(length=16)
+
+		def log(question, status, user=None, spec=GROUP_SPEC):
+			return frappe.get_doc({"doctype": "SPICE AI Query Log", "user": user or frappe.session.user, "thread": chat,
+			                       "question": question, "status": status,
+			                       "spec": json.dumps(spec) if spec else None}).insert(ignore_permissions=True)
+
+		log("First", "Answered")
+		log("Failed one", "Failed")
+		log("Someone else's", "Answered", user="Guest")
+		log("Second", "Answered")
+		current = log("Now", "Queued", spec=None)
+		self.assertEqual([h["question"] for h in api._history(current)], ["First", "Second"])
+
+	def test_a_thread_id_from_another_user_starts_a_new_chat(self):
+		from spice_facility.api import talk_to_data as api
+
+		theirs = frappe.generate_hash(length=16)
+		frappe.get_doc({"doctype": "SPICE AI Query Log", "user": "Guest", "thread": theirs, "question": "Theirs",
+		                "status": "Answered"}).insert(ignore_permissions=True)
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
+		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"), \
+		     patch("spice_facility.api.talk_to_data.chat_provider", return_value=FakeProvider("Gemini", False)), \
+		     patch("spice_facility.api.talk_to_data.frappe.enqueue"):
+			self.assertNotEqual(api.ask("Mine", thread=theirs)["thread"], theirs)
+		self.assertEqual(frappe.db.count("SPICE AI Query Log", {"thread": theirs}), 1)
+
+
+class TestChatPdf(AITestCase):
+	"""Download a chat as a PDF of its answers, with or without the questions."""
+
+	def _chat(self, user=None, rows=3, hidden=0):
+		chat = frappe.generate_hash(length=16)
+		table = {"columns": [{"label": "Name", "field": "name", "type": "Data"}],
+		         "rows": [{"name": f"R{i}"} for i in range(rows)]}
+		answer = {"mode": "data", "title": "Encounters", "text": "Seen in [[Patient Encounter:SF-TEST-ENC-1]].",
+		          "kind": "list", "table": table, "rows_read": rows,
+		          "sources": [{"doctype": "Patient Encounter", "name": "SF-TEST-ENC-1", "label": "Morning visit"}]}
+		for question, status in (("Which encounters?", "Answered"), ("Broken one", "Failed")):
+			frappe.get_doc({"doctype": "SPICE AI Query Log", "user": user or frappe.session.user, "thread": chat,
+			                "question": question, "status": status, "provider": "Gemini", "model": "gemini-test",
+			                "hidden": hidden, "answer_json": json.dumps(answer)}).insert(ignore_permissions=True)
+		return chat
+
+	def _export(self, chat, **kwargs):
+		from spice_facility.api import talk_to_data as api
+
+		rendered = {}
+
+		def fake_pdf(html, options=None):
+			rendered["html"] = html
+			return b"%PDF-1.4 fake"
+
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
+		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"), patch("frappe.utils.pdf.get_pdf", fake_pdf):
+			api.export_thread_pdf(chat, **kwargs)
+		return rendered["html"], frappe.local.response
+
+	def test_safe_filename(self):
+		from spice_facility.api.talk_to_data import safe_filename
+
+		self.assertEqual(safe_filename("../../etc/passwd"), "etcpasswd.pdf")
+		self.assertEqual(safe_filename('Ward "A"\nreport'), "Ward A report.pdf")
+		self.assertEqual(safe_filename("Ward report.PDF"), "Ward report.PDF")
+		self.assertEqual(safe_filename("   "), "ask-data.pdf")
+		self.assertTrue(len(safe_filename("x" * 300)) <= 84)
+		self.assertEqual(safe_filename("ওয়ার্ড রিপোর্ট"), "ask-data.pdf")  # non-Latin: Frappe's download header can't carry it
+
+	def test_answers_with_or_without_questions_and_links_as_plain_labels(self):
+		chat = self._chat()
+		html, response = self._export(chat, include_questions=1, filename="Ward report")
+		self.assertIn("Which encounters?", html)
+		self.assertNotIn("Broken one", html)  # only answered questions
+		self.assertIn("Morning visit", html)
+		self.assertNotIn("[[", html)
+		self.assertEqual((response["filename"], response["type"]), ("Ward report.pdf", "download"))
+		html, _response = self._export(chat, include_questions=0)
+		self.assertNotIn("Which encounters?", html)
+		self.assertIn("Encounters", html)
+
+	def test_long_tables_are_capped(self):
+		from spice_facility.api.talk_to_data import PDF_MAX_ROWS
+
+		html, _response = self._export(self._chat(rows=PDF_MAX_ROWS + 5))
+		self.assertIn(f"R{PDF_MAX_ROWS - 1}<", html)
+		self.assertNotIn(f"R{PDF_MAX_ROWS}<", html)
+
+	def test_a_name_that_repeats_a_question_is_not_used_when_questions_are_left_out(self):
+		chat = self._chat()
+		html, response = self._export(chat, include_questions=0, filename="Which encounters? - 13-10-2026")
+		self.assertNotIn("Which encounters?", html)
+		self.assertNotIn("Which encounters", response["filename"])
+		_html, response = self._export(chat, include_questions=0, filename="Ward report")
+		self.assertEqual(response["filename"], "Ward report.pdf")
+
+	def test_another_users_chat_or_a_deleted_chat_cannot_be_exported(self):
+		other = "sf-pdf-other@example.com"
+		if not frappe.db.exists("User", other):
+			frappe.get_doc({"doctype": "User", "email": other, "first_name": "Other", "send_welcome_email": 0}).insert(
+				ignore_permissions=True)
+		for chat in (self._chat(user=other), self._chat(hidden=1)):
+			with self.assertRaises(frappe.ValidationError):
+				self._export(chat)
+
+	def test_the_export_is_logged(self):
+		chat = self._chat()
+		before = frappe.db.count("Access Log", {"method": "Ask Data PDF"})
+		self._export(chat)
+		self.assertEqual(frappe.db.count("Access Log", {"method": "Ask Data PDF"}), before + 1)
+
+	def test_a_real_pdf_is_produced(self):
+		from spice_facility.api import talk_to_data as api
+
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
+		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"):
+			api.export_thread_pdf(self._chat(), filename="Real")
+		self.assertTrue(bytes(frappe.local.response["filecontent"]).startswith(b"%PDF"))
+
+
+class TestPdfCharts(IntegrationTestCase):
+	"""Every visual the chat draws has a printed form in the PDF."""
+
+	def test_pie_and_donut(self):
+		from spice_facility.ai import pdf_charts
+
+		svg = str(pdf_charts.pie([3, 1, 0, 2]))
+		self.assertEqual(svg.count("<path"), 3)  # the zero slice is skipped
+		self.assertIn("<circle", str(pdf_charts.pie([5], donut=False)))  # one slice is a whole disc
+		self.assertEqual(str(pdf_charts.pie([1, 1], donut=True)).count("<circle"), 1)  # the hole
+		self.assertIsNone(pdf_charts.pie([0, 0]))
+
+	def test_line_and_columns_escape_labels_and_round_the_axis(self):
+		from spice_facility.ai import pdf_charts
+
+		svg = str(pdf_charts.line(["<b>Jan</b>", "Feb"], [{"name": "A", "values": [3, 7]}]))
+		self.assertIn("&lt;b&gt;Jan", svg)
+		self.assertNotIn("<b>", svg)
+		self.assertIn("<polyline", svg)
+		self.assertIn(">10<", svg)  # 7 rounds up to an axis top of 10
+		cols = str(pdf_charts.columns(["Jan", "Feb"], [{"name": "A", "values": [1, 2]}, {"name": "B", "values": [2, 0]}]))
+		self.assertEqual(cols.count("<rect"), 4)
+		self.assertIsNone(pdf_charts.line([], []))
+
+	def test_each_answer_kind_gets_the_visual_the_chat_shows(self):
+		from spice_facility.api.talk_to_data import _pdf_visual
+
+		table = {"columns": [{"label": "Status", "field": "label", "type": "Data"},
+		                     {"label": "Count", "field": "value", "type": "Float"}],
+		         "rows": [{"label": "Open", "value": 3}, {"label": "Closed", "value": 1}]}
+		chart = {"labels": ["Open", "Closed"], "datasets": [{"name": "Count", "values": [3, 1]}]}
+		pie = _pdf_visual({"kind": "groups", "chart": {**chart, "type": "pie"}, "table": table})
+		self.assertEqual(pie["kind"], "pie")
+		self.assertEqual([i["share"] for i in pie["legend"]], ["75.0%", "25.0%"])
+		self.assertEqual(_pdf_visual({"kind": "groups", "chart": {**chart, "type": "donut"}, "table": table})["kind"], "pie")
+		self.assertEqual(_pdf_visual({"kind": "groups", "chart": {**chart, "type": "bar"}, "table": table})["kind"], "bars")
+
+		series = {"labels": ["2026-08", "2026-09", "2026-10"], "datasets": [{"name": "Count", "values": [1, 4, 2]}]}
+		series_table = {"columns": [{"label": "Period", "field": "label", "type": "Data"},
+		                            {"label": "Count", "field": "s0", "type": "Float"}],
+		                "rows": [{"label": p, "s0": v} for p, v in zip(series["labels"], [1, 4, 2], strict=True)]}
+		line = _pdf_visual({"kind": "series", "chart": {**series, "type": "line"}, "table": series_table})
+		self.assertEqual(line["kind"], "chart")
+		self.assertIn("<polyline", str(line["svg"]))
+		self.assertEqual(len(line["table"]["rows"]), 3)  # values print under the chart
+		cols = _pdf_visual({"kind": "series", "chart": {**series, "type": "bar"}, "table": series_table})
+		self.assertIn("<rect", str(cols["svg"]))
+		single = _pdf_visual({"kind": "series", "chart": {"labels": ["2026-10"], "datasets": [{"name": "Count", "values": [5]}],
+		                                                  "type": "line"}, "table": series_table})
+		self.assertEqual(single["kind"], "table")
+
+
+class TestSummaryBlockStates(AITestCase):
+	def test_switched_off_summaries_are_a_state_not_an_error(self):
+		from spice_facility.api import ai_summary
+
+		patient = any_patient()
+		off = replace(ai_summary.get_config(), summary_enabled=False)
+		with patch("spice_facility.api.ai_summary.get_config", return_value=off):
+			self.assertEqual(ai_summary.get("Patient", patient.name), {"enabled": False, "reason": "off"})
+		with patch("spice_facility.api.ai_summary.user_can_use_ai", return_value=False):
+			self.assertEqual(ai_summary.get("Patient", patient.name), {"enabled": False, "reason": "access"})
+
+
+class TestFakeProvider(AITestCase):
+	"""The scripted e2e model must never appear unless a test site explicitly asks for it."""
+
+	def _providers(self, allow_tests, flag):
+		from spice_facility.ai.config import FAKE, get_config
+
+		with patch.dict(frappe.conf, {"allow_tests": allow_tests, "spice_ai_fake_provider": flag}), \
+		     patch.dict(os.environ, {"SPICE_AI_FAKE_PROVIDER": "1"}):  # the environment must not count
+			config = get_config()
+			return config, config.provider(FAKE)
+
+	def test_off_unless_tests_are_allowed_and_the_flag_is_set(self):
+		self.assertIsNone(self._providers(allow_tests=1, flag=None)[1])
+		self.assertIsNone(self._providers(allow_tests=0, flag=1)[1])
+		self.assertIsNone(self._providers(allow_tests=None, flag="1")[1])
+
+	def test_when_on_it_is_a_chat_model_that_is_never_local(self):
+		config, fake = self._providers(allow_tests=1, flag=1)
+		self.assertTrue(fake and fake.enabled and fake.in_chat)
+		self.assertFalse(fake.is_local)
+		self.assertIn("Fake", config.chat_providers())
+
+	def test_its_scripted_plans_are_valid_for_this_site(self):
+		from spice_facility.ai.providers.fake import SCRIPT, FakeProvider
+
+		fake = FakeProvider(self._providers(allow_tests=1, flag=1)[1])
+		for keyword, (dataset_name, _group, _output, _bucket) in SCRIPT:
+			dataset = data_catalog.get(dataset_name)
+			messages = [{"role": "user", "content": f"Question: {keyword or 'anything'}"}]
+			self.assertEqual(fake.complete_json("", messages, {"properties": {"dataset": {}}})["dataset"], dataset_name)
+			query.validate(fake.complete_json("", messages, query.spec_schema(dataset)), dataset, 50)
+
+
 class TestWithoutLocalModel(AITestCase):
 	def test_answers_are_built_from_the_result_and_record_questions_stay_data(self):
 		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])

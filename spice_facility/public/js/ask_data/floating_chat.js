@@ -29,6 +29,10 @@ frappe.provide("spice_facility.ai");
 			this.$button.on("click", () => this.toggle(true));
 			this.$drawer.find(".sf-drawer-close").on("click", () => this.toggle(false));
 			frappe.router.on("change", () => this.on_route());
+			// A form opened before it finished loading has no record yet: pick it up once the form renders.
+			$(document).on("form-refresh", () => {
+				if (this.view?.settings) this.view.refresh_context();
+			});
 			this.on_route();
 		}
 

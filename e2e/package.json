@@ -1,0 +1,11 @@
+{
+  "name": "spice-facility-e2e",
+  "private": true,
+  "description": "Ask Data end-to-end tests against a running site with the fake model (see e2e/README.md).",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0"
+  }
+}

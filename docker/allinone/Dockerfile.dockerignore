@@ -9,3 +9,5 @@
 **/node_modules
 **/.env
 **/.env.local
+# Browser tests run from the CI runner against the image; they are not runtime code.
+apps/spice_facility/e2e

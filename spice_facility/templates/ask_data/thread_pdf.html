@@ -1,0 +1,102 @@
+{#- One Ask Data chat as a printable document (api/talk_to_data.py: export_thread_pdf).
+    wkhtmltopdf uses an old WebKit: tables and simple inline styles only, no flex or grid. -#}
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+	body { font-family: "Inter", "Noto Sans", "Noto Sans Devanagari", "Noto Sans Bengali", Arial, sans-serif;
+		font-size: 11px; color: #1f2933; }
+	.doc-title { font-size: 17px; font-weight: 700; margin: 0 0 4px; }
+	.doc-meta { color: #6b7280; font-size: 10px; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid #e5e7eb; }
+	.turn { margin: 0 0 16px; page-break-inside: avoid; }
+	.question { background: #eef0fb; border-radius: 10px; padding: 6px 10px; margin: 0 0 6px; font-weight: 600; }
+	.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 11px; }
+	.title { font-weight: 700; font-size: 12px; margin: 0 0 4px; }
+	.kpi { font-size: 20px; font-weight: 700; }
+	.kpi-label { color: #6b7280; font-size: 11px; font-weight: 400; }
+	.text { line-height: 1.5; margin: 4px 0 6px; }
+	table.data { width: 100%; border-collapse: collapse; margin: 4px 0; }
+	table.data th { text-align: left; font-size: 10px; color: #6b7280; border-bottom: 1px solid #d1d5db; padding: 3px 4px; }
+	table.data td { border-bottom: 1px solid #f0f1f3; padding: 3px 4px; vertical-align: top; }
+	table.bars td { padding: 2px 4px; }
+	.track { background: #eef0f3; height: 8px; border-radius: 4px; }
+	.fill { background: #5b6bd5; height: 8px; border-radius: 4px; }
+	.num { text-align: right; white-space: nowrap; font-weight: 600; }
+	.small { color: #6b7280; font-size: 9.5px; }
+	table.pie { width: 100%; margin: 6px 0; }
+	table.pie td { vertical-align: middle; }
+	.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+	.share { color: #6b7280; font-weight: 400; width: 52px; }
+	.chart { margin: 6px 0 2px; }
+	.legend { font-size: 10px; color: #4b5563; margin: 0 0 4px; }
+</style>
+</head>
+<body>
+	{%- macro table(t) -%}
+	<table class="data">
+		<tr>{% for column in t.columns %}<th>{{ column|e }}</th>{% endfor %}</tr>
+		{% for row in t.rows %}
+		<tr>{% for value in row %}<td>{{ value|e }}</td>{% endfor %}</tr>
+		{% endfor %}
+	</table>
+	{% if t.more %}<div class="small">{{ t.more|e }}</div>{% endif %}
+	{%- endmacro %}
+	<div class="doc-title">{{ title|e }}</div>
+	<div class="doc-meta">
+		{{ _("Ask Data chat") }} · {{ _("Exported by {0} on {1}").format(exported_by, exported_on)|e }}
+		· {{ (_("Questions included") if include_questions else _("Answers only"))|e }}
+	</div>
+
+	{% for turn in turns %}
+	<div class="turn">
+		{% if turn.question %}<div class="question">{{ turn.question|e }}</div>{% endif %}
+		<div class="card">
+			{% if turn.title %}<div class="title">{{ turn.title|e }}</div>{% endif %}
+			{% if turn.kpi %}<div><span class="kpi">{{ turn.kpi.value|e }}</span> <span class="kpi-label">{{ turn.kpi.label|e }}</span></div>{% endif %}
+			{% if turn.text %}<div class="text">{{ turn.text|e }}</div>{% endif %}
+
+			{% if turn.visual and turn.visual.kind == "bars" %}
+			<table class="data bars">
+				{% for row in turn.visual.rows %}
+				<tr>
+					<td style="width: 34%">{{ row.label|e }}</td>
+					<td><div class="track"><div class="fill" style="width: {{ row.width }}%"></div></div></td>
+					<td class="num" style="width: 12%">{{ row.value|e }}</td>
+				</tr>
+				{% endfor %}
+			</table>
+			{% elif turn.visual and turn.visual.kind == "pie" %}
+			<table class="pie">
+				<tr>
+					<td style="width: 190px">{{ turn.visual.svg }}</td>
+					<td>
+						<table class="data">
+							{% for item in turn.visual.legend %}
+							<tr>
+								<td><span class="swatch" style="background: {{ item.colour }}"></span>{{ item.label|e }}</td>
+								<td class="num">{{ item.value|e }}</td>
+								<td class="num share">{{ item.share|e }}</td>
+							</tr>
+							{% endfor %}
+						</table>
+					</td>
+				</tr>
+			</table>
+			{% elif turn.visual and turn.visual.kind == "chart" %}
+			<div class="chart">{{ turn.visual.svg }}</div>
+			{% if turn.visual.legend|length > 1 %}
+			<div class="legend">{% for item in turn.visual.legend %}<span class="swatch" style="background: {{ item.colour }}"></span>{{ item.label|e }}&nbsp;&nbsp; {% endfor %}</div>
+			{% endif %}
+			{% if turn.visual.table %}{{ table(turn.visual.table) }}{% endif %}
+			{% elif turn.visual and turn.visual.kind == "table" %}
+			{{ table(turn.visual) }}
+			{% endif %}
+
+			{% if turn.source %}<div class="small">{{ _("Source") }}: {{ turn.source|e }}</div>{% endif %}
+			{% if turn.meta %}<div class="small">{{ turn.meta|e }}</div>{% endif %}
+		</div>
+	</div>
+	{% endfor %}
+</body>
+</html>
