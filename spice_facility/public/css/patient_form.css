@@ -1,0 +1,4 @@
+/* Patient form: the Overview cards carry their own titles and frames, so the form runs edge to edge —
+   no right-hand form sidebar (assign / attachments / tags / share) and no rules between Overview sections. */
+#page-Patient .layout-side-section { display: none; }
+#page-Patient .form-section[data-fieldname^="sf_sec_"] { border-bottom: 0; }

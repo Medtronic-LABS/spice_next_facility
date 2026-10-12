@@ -16,6 +16,27 @@ frappe.provide("spice_facility.form_ux");
 
 	const link = (doctype, name, label) =>
 		`<a class="sf-link" data-doctype="${esc(doctype)}" data-name="${esc(name)}">${esc(label || name)}</a>`;
+	// A link to a list filtered by one field (e.g. this patient's lab tests).
+	const list_link = (doctype, field, value, label) =>
+		`<a class="sf-link" data-doctype="${esc(doctype)}" data-field="${esc(field)}" data-value="${esc(value)}">${label}</a>`;
+	// "32 Year(s) 2 Month(s) 20 Day(s)" -> "32 yrs"; under two years keep months ("1 yr 3 mo", "7 mo").
+	function short_age(age) {
+		const n = String(age || "").match(/\d+/g)?.map(Number) || [];
+		if (!n.length) return "";
+		if (n[0] >= 2) return S.patient.age_years(n[0]);
+		return n[0] ? S.patient.age_year_months(n[0], n[1] || 0) : S.patient.age_months(n[1] || 0);
+	}
+	// "today" / "in 11 days" / "17 days ago"
+	function relative_day(value) {
+		const days = frappe.datetime.get_day_diff(value, frappe.datetime.get_today());
+		if (days === 0) return S.common.today;
+		return days > 0 ? S.common.in_days(days) : S.common.days_ago(-days);
+	}
+	const stat = (label, value, sub, tone = "") =>
+		`<div class="sf-pt-stat ${tone}"><div class="sf-pt-stat-label">${esc(label)}</div>
+			<div class="sf-pt-stat-value">${value}</div>${sub ? `<div class="sf-pt-stat-sub">${sub}</div>` : ""}</div>`;
+	const visit = (when, who) => (when
+		? [`${esc(relative_day(when))}`, who ? esc(who) : ""].filter(Boolean).join(" · ") : "");
 	const badge = (label, tone = "gray") => `<span class="sf-badge sf-${tone}">${esc(label)}</span>`;
 	const tile = (label, value, tone = "") =>
 		`<div class="sf-tile ${tone}"><div class="sf-tile-label">${esc(label)}</div><div class="sf-tile-value">${value}</div></div>`;
@@ -87,7 +108,7 @@ frappe.provide("spice_facility.form_ux");
 	// ─── renderers ──────────────────────────────────────────────────────────
 	const renderers = {
 		patient_header(host, d) {
-			const chips = [d.sex, d.age, d.blood_group, d.mobile].filter(Boolean).map((c) => badge(c)).join("");
+			const facts = [d.sex, short_age(d.age), d.blood_group, d.mobile].filter(Boolean).map(esc).join(" · ");
 			const flags = [];
 			if (d.admission) flags.push(badge(`${S.patient.admitted}${d.admission.bed ? " · " + S.patient.bed(d.admission.bed) : ""}`, "orange"));
 			if (d.emergency) flags.push(badge(`${S.patient.in_emergency}${d.emergency.triage_level ? " · " + d.emergency.triage_level : ""}`, "red"));
@@ -95,28 +116,39 @@ frappe.provide("spice_facility.form_ux");
 				? d.allergies.map((a) => badge(`${a.allergy}${a.severity ? " · " + a.severity : ""}`, SEVERITY_TONE[a.severity] || "red")).join("")
 				: badge(S.patient.no_allergies, "green");
 			const meds = d.medications.length
-				? `<ul class="sf-list">${d.medications.map((m) => `<li><b>${esc(m.medication)}</b> <span class="sf-muted">${esc([m.dosage, m.period].filter(Boolean).join(" · "))}</span></li>`).join("")}</ul>`
-				: empty(S.patient.no_medications);
+				? `<ul class="sf-pt-meds">${d.medications.map((m) => `<li><span class="sf-pt-med">${esc(m.medication)}</span>
+					<span class="sf-muted">${esc([m.dosage, m.period].filter(Boolean).join(" · "))}</span></li>`).join("")}</ul>`
+				: `<span class="sf-muted">${esc(S.patient.no_medications)}</span>`;
 			const insurance = d.policy
 				? `${esc(d.policy.insurance_payor)} <span class="sf-muted">${esc(S.patient.expires(date(d.policy.policy_expiry_date)))}</span>`
 				: `<span class="sf-muted">${esc(S.patient.no_insurance)}</span>`;
+			const records = (d.records || []).map((r) => {
+				const label = esc(S.patient.records[r.doctype]?.(r.count) || `${r.count} ${__(r.doctype)}`);
+				return list_link(r.doctype, "patient", r.patient, label.replace(String(r.count), `<b>${r.count}</b>`));
+			}).join("");
+			const last = d.last_visit, next = d.next_visit;
 			host.innerHTML = `
-				<div class="sf-hero">
-					<div class="sf-avatar">${esc(frappe.get_abbr(d.patient_name))}</div>
-					<div class="sf-hero-main">
-						<div class="sf-hero-name">${esc(d.patient_name)} ${flags.join("")}</div>
-						<div class="sf-chips">${chips}</div>
+				<div class="sf-pt">
+					<div class="sf-pt-top">
+						<div class="sf-avatar">${esc(frappe.get_abbr(d.patient_name))}</div>
+						<div class="sf-pt-id">
+							<div class="sf-pt-name">${esc(d.patient_name)} ${flags.join("")}</div>
+							<div class="sf-pt-facts">${facts}</div>
+						</div>
+						<div class="sf-pt-stats">
+							${stat(S.patient.last_visit, last ? esc(date(last.encounter_date)) : "—", last ? visit(last.encounter_date, last.practitioner_name) : "")}
+							${stat(S.patient.next_visit, next ? esc(date(next.appointment_date)) : "—", next ? visit(next.appointment_date, next.practitioner_name) : "")}
+							${stat(S.patient.outstanding, money(d.outstanding, d.currency), "", d.outstanding > 0 ? "sf-pt-due" : "")}
+						</div>
 					</div>
-					<div class="sf-tiles sf-hero-tiles">
-						${tile(S.patient.last_visit, d.last_visit ? `${date(d.last_visit.encounter_date)}<div class="sf-muted">${esc(d.last_visit.practitioner_name || "")}</div>` : "—")}
-						${tile(S.patient.next_visit, d.next_visit ? `${date(d.next_visit.appointment_date)}<div class="sf-muted">${esc(d.next_visit.practitioner_name || "")}</div>` : "—")}
-						${tile(S.patient.outstanding, money(d.outstanding, d.currency), d.outstanding > 0 ? "sf-alert" : "")}
+					<div class="sf-pt-body">
+						${section(S.patient.allergies, `<div class="sf-chips">${allergies}</div>`)}
+						${section(S.patient.medications, meds)}
+						<div>
+							${section(S.patient.insurance, insurance)}
+							${records ? section(S.patient.records_title, `<div class="sf-pt-records">${records}</div>`) : ""}
+						</div>
 					</div>
-				</div>
-				<div class="sf-grid-3">
-					${section(S.patient.allergies, `<div class="sf-chips">${allergies}</div>`)}
-					${section(S.patient.medications, meds)}
-					${section(S.patient.insurance, insurance)}
 				</div>`;
 		},
 
@@ -345,7 +377,12 @@ frappe.provide("spice_facility.form_ux");
 			const a = e.target.closest(".sf-link");
 			if (!a) return;
 			e.preventDefault();
-			frappe.set_route("Form", a.dataset.doctype, a.dataset.name);
+			if (a.dataset.field) {
+				frappe.route_options = { [a.dataset.field]: a.dataset.value };
+				frappe.set_route("List", a.dataset.doctype);
+			} else {
+				frappe.set_route("Form", a.dataset.doctype, a.dataset.name);
+			}
 		});
 
 		if (frm.is_new()) {
