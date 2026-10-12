@@ -100,6 +100,7 @@ spice_facility.ai.strings = {
 		asked: __("Asked"),
 		took: (seconds) => __("took {0} s", [seconds]),
 		technical: __("Technical details"),
+		record_fallback: __("Answered from the data, not by reading this record: questions about a record's details need the AI model on this server, which is not set up here."),
 		answered_with: (provider, model) => __("Answered with {0} · {1}", [provider, model]),
 		examples: {
 			default: [

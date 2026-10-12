@@ -41,6 +41,7 @@ frappe.provide("spice_facility.ai.ask");
 				${this.sources_panel(turn)}
 				${figure ? `<div class="sf-ask-kpi"><span class="sf-ask-kpi-value">${fmt(figure.value, "Float")}</span>
 					<span class="sf-ask-kpi-label">${esc(figure.label)}</span></div>` : ""}
+				${a.record_fallback ? `<div class="sf-ask-fallback">${icon("info")}<span>${esc(S.record_fallback)}</span></div>` : ""}
 				<div class="sf-ask-text">${linkify(a.text, labels)}</div>
 				${empty_result}
 				${visual === "chart" ? '<div class="sf-ask-chart"></div>' : ""}

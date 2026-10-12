@@ -123,6 +123,16 @@ class TestCatalogAndQuery(AITestCase):
 		self.assertEqual(scope, {"patient": patient.name})
 		self.assertTrue(labels)
 
+	def test_asking_about_the_open_records_own_kind_scopes_to_that_record(self):
+		patient = any_patient()
+		page = resolve_page({"doctype": "Patient", "name": patient.name})
+		dataset = data_catalog.get("Patient")
+		scope, labels = implicit_scope(dataset, page)
+		self.assertEqual(scope, {"name": patient.name})
+		self.assertTrue(labels)
+		spec = query.validate({**GROUP_SPEC, "group_by": "", "output": "list", "list_fields": ["patient_name"]}, dataset, 50)
+		self.assertEqual(query.execute(spec, dataset, scope)["rows_read"], 1)  # not every patient
+
 	def test_tidy_drops_unrequested_period_and_bucket(self):
 		dataset = data_catalog.get("Patient Appointment")
 		spec = query.validate({**GROUP_SPEC, "group_by": "department", "time_bucket": "month",
@@ -608,6 +618,18 @@ class TestWithoutLocalModel(AITestCase):
 		self.assertTrue(answer["text"])
 		self.assertIn("chart", answer)
 		self.assertEqual(answer["source"]["doctype"], "Patient Encounter")
+
+	def test_a_record_question_without_a_local_model_says_it_was_answered_from_data(self):
+		patient = any_patient()
+		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient"},
+		                                                     {**GROUP_SPEC, "group_by": "", "output": "list",
+		                                                      "list_fields": ["patient_name"]}])
+		with patch("spice_facility.ai.talk_to_data.chat_provider", return_value=cloud), \
+		     patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False):
+			answer, meta = run_question("Tell me about this patient", "Claude", {"doctype": "Patient", "name": patient.name})
+		self.assertEqual(meta["mode"], "Data")
+		self.assertTrue(answer["record_fallback"])
+		self.assertEqual(answer["rows_read"], 1)  # this patient only, not every patient
 
 	def test_summaries_switch_off_without_a_local_model(self):
 		from spice_facility.ai.config import get_config

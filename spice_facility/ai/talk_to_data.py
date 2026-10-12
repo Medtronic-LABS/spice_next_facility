@@ -77,6 +77,9 @@ def implicit_scope(dataset, page):
 	if not page or page["kind"] != "form":
 		return {}, []
 	doctype, name = page["doctype"], page["name"]
+	if dataset["doctype"] == doctype:
+		# asked about the open record's own kind of data (e.g. Patient from a patient): that one record
+		return {"name": name}, [_("{0} = {1} (this page)").format(_(doctype), page["label"])]
 	field = dataset["scopes"].get(doctype)
 	if field:
 		return {field: name}, [_("{0} = {1} (this page)").format(dataset["fields"].get(field, {}).get("label", field), page["label"])]
@@ -181,7 +184,8 @@ def plan(question, provider, history, page, datasets):
 	if not dataset:
 		raise query.QueryValidationError(_("I could not tell which data this question is about."))
 	scope_hint = ""
-	if page and page["kind"] == "form" and (dataset["scopes"].get(page["doctype"]) or "Patient" in dataset["scopes"]):
+	if page and page["kind"] == "form" and (dataset["doctype"] == page["doctype"] or dataset["scopes"].get(page["doctype"])
+	                                        or "Patient" in dataset["scopes"]):
 		scope_hint = (f"The question is asked from one {page['doctype']} record; the system already limits results to "
 		              "that record, so do NOT add filters for it.")
 	spec = provider.complete_json(
@@ -278,6 +282,9 @@ def run_question(question, provider_name=None, page=None, use_context=True, hist
 	mode = choose_mode(question, page, use_context, provider)
 	answer = answer_record(question, page) if mode == "record" else answer_data(question, provider, history, page, use_context)
 	answer.update({"provider": provider.name, "planner": provider.model, "planner_is_local": provider.is_local,
-	               "page": page})
+	               "page": page,
+	               # asked from a record that has record answers, but no local model may read it: say so on the card
+	               "record_fallback": bool(page and page["kind"] == "form" and page["doctype"] in RECORD_DOCTYPES
+	                                       and mode == "data" and not has_local_provider())})
 	return answer, {"mode": mode.title(), "duration_ms": round((time.monotonic() - started) * 1000),
 	                "row_count": answer.get("rows_read") or 0, "provider": provider.name, "model": provider.model}

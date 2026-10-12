@@ -92,6 +92,7 @@
 .sf-ask-kpi { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .sf-ask-kpi-value { font-size: 26px; font-weight: 700; line-height: 1.1; color: var(--text-color); }
 .sf-ask-kpi-label { color: var(--text-muted); }
+.sf-ask-fallback { display: flex; gap: 6px; align-items: flex-start; font-size: var(--text-sm); color: var(--text-muted); background: var(--subtle-fg); border-radius: 6px; padding: 6px 8px; }
 .sf-ask-text { line-height: 1.55; }
 .sf-ask-chart { margin: 0 -6px; }
 /* ranked bar list for many or long-named groups */
