@@ -52,7 +52,8 @@ fi
 SITE_CONFIG="sites/${SITE_NAME}/site_config.json"
 if ! ./env/bin/python -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])).get("encryption_key") else 1)' "${SITE_CONFIG}"; then
 	echo "[site-setup] creating the site's encryption key"
-	bench --site "${SITE_NAME}" set-config encryption_key \
+	# `--`: a Fernet key is URL-safe base64 and can start with "-", which bench would read as an option
+	bench --site "${SITE_NAME}" set-config encryption_key -- \
 		"$(./env/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 fi
 
@@ -72,7 +73,7 @@ if [ -n "${DOMAIN:-}" ] && [ "${DOMAIN#:}" = "${DOMAIN}" ]; then
 		http://*|https://*) HOST_URL="${DOMAIN}" ;;
 		*) HOST_URL="https://${DOMAIN}" ;;
 	esac
-	bench --site "${SITE_NAME}" set-config host_name "${HOST_URL}"
+	bench --site "${SITE_NAME}" set-config host_name -- "${HOST_URL}"
 fi
 
 echo "[site-setup] migrating"
