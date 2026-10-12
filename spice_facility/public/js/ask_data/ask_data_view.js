@@ -95,7 +95,6 @@ frappe.provide("spice_facility.ai");
 			this.mode = mode;
 			this.get_page = get_page;
 			this.use_context = true;
-			this.history = [];
 			this.thread_id = this.load_thread_id();
 			this.$root = $(`<div class="sf-ask sf-ask-${mode}"></div>`).appendTo(parent);
 			this.init();
@@ -233,7 +232,6 @@ frappe.provide("spice_facility.ai");
 				const page = use_context ? this.page() : null;
 				const response = await frappe.xcall(`${API}.ask`, {
 					question, provider: this.provider, page: page ? JSON.stringify(page) : null, use_context: use_context ? 1 : 0,
-					history: JSON.stringify(this.history.slice(-2).map((t) => ({ question: t.question, spec: t.answer?.spec }))),
 					thread: this.thread_id,
 				});
 				if (response.thread !== this.thread_id) this.set_thread_id(response.thread);
@@ -246,7 +244,6 @@ frappe.provide("spice_facility.ai");
 				const turn = { question, log, status: result.status, error: result.error, answer: result.answer,
 				               asked_on: result.asked_on, duration_ms: result.duration_ms,
 				               provider: result.provider, model: result.model };
-				this.history.push(turn);
 				this.load_threads();
 				$answer.replaceWith(this.answer_html(turn));
 				this.after_render($turn, turn);
@@ -564,7 +561,6 @@ frappe.provide("spice_facility.ai");
 			}
 			if (!turns.length) return this.new_chat();
 			this.set_thread_id(thread_id);
-			this.history = turns;
 			this.$thread.empty();
 			turns.forEach((turn) => this.render_turn(turn));
 			this.render_examples();
@@ -576,7 +572,6 @@ frappe.provide("spice_facility.ai");
 			if (this.busy) this.stop();
 			if (this.overlay()) this.set_side(false);
 			this.set_thread_id(null);
-			this.history = [];
 			this.$thread.empty();
 			this.render_examples();
 			this.render_threads();
