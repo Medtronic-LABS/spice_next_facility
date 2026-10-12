@@ -5,16 +5,14 @@ import time
 import frappe
 from frappe import _
 
-from spice_facility.ai.config import CLAUDE, OLLAMA, OPENAI, get_config
+from spice_facility.ai.config import PROVIDER_NAMES, get_config
 from spice_facility.ai.providers.base import AIProviderError
 from spice_facility.ai.providers.registry import build
-
-PROVIDERS = (OLLAMA, CLAUDE, OPENAI)
 
 
 def _provider(name):
 	frappe.only_for("System Manager")
-	if name not in PROVIDERS:
+	if name not in PROVIDER_NAMES:
 		frappe.throw(_("Unknown AI provider {0}").format(name), frappe.ValidationError)
 	return build(name, get_config())
 

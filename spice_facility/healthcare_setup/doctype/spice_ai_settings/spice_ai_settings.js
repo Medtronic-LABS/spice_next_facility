@@ -4,6 +4,7 @@ const SPICE_AI_PROVIDERS = [
 	{ name: "Ollama", enabled: "ollama_enabled", model: "ollama_model", status: "ollama_status" },
 	{ name: "Claude", enabled: "claude_enabled", model: "claude_model", status: "claude_status", key: "anthropic_api_key" },
 	{ name: "OpenAI", enabled: "openai_enabled", model: "openai_model", status: "openai_status", key: "openai_api_key" },
+	{ name: "Gemini", enabled: "gemini_enabled", model: "gemini_model", status: "gemini_status", key: "gemini_api_key" },
 ];
 
 frappe.ui.form.on("SPICE AI Settings", {

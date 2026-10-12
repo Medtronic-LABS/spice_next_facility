@@ -6,7 +6,7 @@
  "issingle": 1,
  "engine": "InnoDB",
  "creation": "2026-10-09 12:00:00.000000",
- "modified": "2026-10-09 12:00:00.000000",
+ "modified": "2026-10-12 16:14:25.867698",
  "modified_by": "Administrator",
  "owner": "Administrator",
  "field_order": [
@@ -39,6 +39,15 @@
   "openai_timeout",
   "openai_in_chat",
   "openai_status",
+  "gemini_section",
+  "gemini_enabled",
+  "gemini_api_key",
+  "gemini_model",
+  "gemini_col",
+  "gemini_base_url",
+  "gemini_timeout",
+  "gemini_in_chat",
+  "gemini_status",
   "features_tab",
   "features_section",
   "summary_enabled",
@@ -243,6 +252,63 @@
    "label": "Status"
   },
   {
+   "fieldname": "gemini_section",
+   "fieldtype": "Section Break",
+   "label": "Gemini (Google)",
+   "collapsible": 1,
+   "description": "Cloud. Receives only the question and table/field names \u2014 never patient data."
+  },
+  {
+   "fieldname": "gemini_enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "gemini_api_key",
+   "fieldtype": "Password",
+   "label": "API key",
+   "depends_on": "gemini_enabled",
+   "length": 255
+  },
+  {
+   "fieldname": "gemini_model",
+   "fieldtype": "Autocomplete",
+   "label": "Model",
+   "depends_on": "gemini_enabled",
+   "description": "Type a model name, or use \u201cRefresh models\u201d to pick from what this provider offers.",
+   "default": "gemini-2.5-flash"
+  },
+  {
+   "fieldname": "gemini_col",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gemini_base_url",
+   "fieldtype": "Data",
+   "label": "API base URL",
+   "default": "https://generativelanguage.googleapis.com/v1beta",
+   "depends_on": "gemini_enabled"
+  },
+  {
+   "fieldname": "gemini_timeout",
+   "fieldtype": "Int",
+   "label": "Timeout (seconds)",
+   "default": "60",
+   "depends_on": "gemini_enabled"
+  },
+  {
+   "fieldname": "gemini_in_chat",
+   "fieldtype": "Check",
+   "label": "Offer in chat",
+   "default": "1",
+   "depends_on": "gemini_enabled"
+  },
+  {
+   "fieldname": "gemini_status",
+   "fieldtype": "HTML",
+   "label": "Status"
+  },
+  {
    "fieldname": "features_tab",
    "fieldtype": "Tab Break",
    "label": "Features"
@@ -286,7 +352,7 @@
    "fieldname": "chat_default_provider",
    "fieldtype": "Select",
    "label": "Default chat provider",
-   "options": "Ollama\nClaude\nOpenAI",
+   "options": "Ollama\nClaude\nOpenAI\nGemini",
    "default": "Ollama"
   },
   {
