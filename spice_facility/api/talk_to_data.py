@@ -89,10 +89,10 @@ def _own_thread(thread):
 	A chat from before threads existed is keyed by its one question's log name: that question joins the thread."""
 	if not thread or not THREAD_ID.match(thread):
 		return None
-	me = frappe.session.user
-	if frappe.db.exists(LOG, {"user": me, "thread": thread}):
+	mine = {"user": frappe.session.user, "hidden": 0}  # a deleted chat is not continued
+	if frappe.db.exists(LOG, {**mine, "thread": thread}):
 		return thread
-	if frappe.db.exists(LOG, {"user": me, "name": thread, "thread": ["is", "not set"]}):
+	if frappe.db.exists(LOG, {**mine, "name": thread, "thread": ["is", "not set"]}):
 		frappe.db.set_value(LOG, thread, "thread", thread, update_modified=False)
 		return thread
 	return None
@@ -102,10 +102,10 @@ def _history(row):
 	"""The plans of this chat's earlier answered questions, from the user's own logs (never from the browser)."""
 	if not row.thread:
 		return []
-	earlier = frappe.get_all(LOG, {"user": row.user, "thread": row.thread, "status": "Answered",
+	earlier = frappe.get_all(LOG, {"user": row.user, "thread": row.thread, "status": "Answered", "hidden": 0,
 	                               "creation": ["<", row.creation], "spec": ["is", "set"]},
-	                         ["question", "spec"], order_by="creation desc", limit=HISTORY_TURNS)
-	return [{"question": r.question, "spec": json.loads(r.spec)} for r in reversed(earlier)]
+	                         ["question", "spec", "provider"], order_by="creation desc", limit=HISTORY_TURNS)
+	return [{"question": r.question, "spec": json.loads(r.spec), "provider": r.provider} for r in reversed(earlier)]
 
 
 def _job_id(log):

@@ -20,7 +20,7 @@ from frappe import _
 from frappe.utils import nowdate
 
 from spice_facility.ai import data_catalog, prompts, query
-from spice_facility.ai.config import get_config
+from spice_facility.ai.config import LOCAL_PROVIDERS, get_config
 from spice_facility.ai.providers.registry import chat_provider, has_local_provider, local_provider
 from spice_facility.ai.summary_context import IDENTIFYING_KEYS
 from spice_facility.ai.summary_context import SUPPORTED as RECORD_DOCTYPES
@@ -37,7 +37,8 @@ MODE_SCHEMA = {"type": "object", "properties": {"mode": {"type": "string", "enum
 NARRATE_ROWS = 50
 # Filter values on these fields identify a person; they never go to a cloud planner inside an earlier plan.
 IDENTIFYING_FIELDS = IDENTIFYING_KEYS | {"patient", "mobile_no", "phone_no", "email_id", "customer", "customer_name",
-                                         "inpatient_record", "insurance_subscriber", "ref_practitioner"}
+                                         "inpatient_record", "insurance_subscriber", "ref_practitioner",
+                                         "primary_practitioner"}
 REDACTED = "[redacted]"
 MAX_CITED = 20
 HISTORY_TURNS = 2
@@ -150,8 +151,9 @@ def answer_record(question, page):
 
 
 def redact_plan(spec):
-	"""An earlier plan as a cloud planner may see it: identifying filter values replaced by a placeholder."""
-	spec = dict(spec or {})
+	"""An earlier plan as a cloud planner may see it: identifying filter values replaced by a placeholder, and no
+	title (a model-written title can echo a name)."""
+	spec = {**(spec or {}), "title": ""}
 	spec["filters"] = [{**f, "value": REDACTED} if f.get("field") in IDENTIFYING_FIELDS and f.get("value") else f
 	                   for f in spec.get("filters") or [] if isinstance(f, dict)]
 	return spec
@@ -162,9 +164,13 @@ def plan(question, provider, history, page, datasets):
 
 	`history` comes from the user's own logs of the same chat (never from the browser), and holds plans only: page
 	and list-view scope is kept out of stored plans, and a cloud planner gets identifying filter values redacted."""
+	turns = [h for h in (history or [])[-HISTORY_TURNS:] if h.get("spec")]
+	if not provider.is_local:
+		# A question first put to a local model may name a patient: it is never forwarded to a cloud planner.
+		turns = [h for h in turns if h.get("provider") and h["provider"] not in LOCAL_PROVIDERS]
 	shown_plan = (lambda spec: spec) if provider.is_local else redact_plan
 	prior = "\n".join(f"Earlier question: {h.get('question')}\nEarlier plan: {json.dumps(shown_plan(h.get('spec')))}"
-	                  for h in (history or [])[-HISTORY_TURNS:] if h.get("spec"))
+	                  for h in turns)
 	content = f"{prior}\n\nQuestion: {question}".strip()
 	names = [d["doctype"] for d in datasets]
 	pick = provider.complete_json(prompts.PICK_DATASET_SYSTEM.format(catalog=data_catalog.catalog_text(datasets)),

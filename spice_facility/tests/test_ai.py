@@ -337,9 +337,10 @@ class TestHistoryNeverLeaks(AITestCase):
 		self.assertEqual(answer["rows_read"], frappe.db.count("Patient Encounter", {"patient_name": TEST_PATIENT}))
 
 	def test_a_cloud_planner_gets_earlier_plans_with_identifying_values_redacted(self):
-		earlier = {**GROUP_SPEC, "filters": [{"field": "patient_name", "op": "=", "value": TEST_PATIENT},
-		                                     {"field": "status", "op": "=", "value": "Completed"}]}
-		history = [{"question": "Encounters for that patient", "spec": earlier}]
+		earlier = {**GROUP_SPEC, "title": f"Encounters for {TEST_PATIENT}",
+		           "filters": [{"field": "patient_name", "op": "=", "value": TEST_PATIENT},
+		                       {"field": "status", "op": "=", "value": "Completed"}]}
+		history = [{"question": "Encounters for that patient", "spec": earlier, "provider": "Claude"}]
 		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
 		local = FakeProvider("Ollama", True, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
 		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False):
@@ -348,6 +349,35 @@ class TestHistoryNeverLeaks(AITestCase):
 		self.assertNotIn(TEST_PATIENT, " ".join(cloud.sent))
 		self.assertIn("Completed", " ".join(cloud.sent))
 		self.assertIn(TEST_PATIENT, " ".join(local.sent))  # a local planner may see the plan as it was
+
+	def test_a_question_first_put_to_a_local_model_is_never_forwarded_to_a_cloud_planner(self):
+		history = [{"question": f"Lab tests for {TEST_PATIENT}", "spec": GROUP_SPEC, "provider": "Ollama"}]
+		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
+		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False):
+			answer_data("And by month?", cloud, history, None, False)
+		self.assertNotIn(TEST_PATIENT, " ".join(cloud.sent))
+
+	def test_the_stored_plan_of_a_list_scoped_answer_has_no_list_values(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "question": "By department",
+		                      "status": "Queued", "thread": frappe.generate_hash(length=16)}).insert(ignore_permissions=True)
+		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
+		with patch("spice_facility.ai.talk_to_data.chat_provider", return_value=cloud), \
+		     patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False), \
+		     patch.object(frappe.db, "commit"):
+			api.run(log.name, page=self._list_page(), use_context=1)
+		row = frappe.db.get_value("SPICE AI Query Log", log.name, ["status", "spec"], as_dict=True)
+		self.assertEqual(row.status, "Answered")
+		self.assertNotIn(TEST_PATIENT, row.spec)
+
+	def test_a_deleted_chat_is_not_continued_and_its_turns_are_not_history(self):
+		from spice_facility.api import talk_to_data as api
+
+		chat = frappe.generate_hash(length=16)
+		frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "thread": chat, "hidden": 1,
+		                "question": "Deleted", "status": "Answered", "spec": json.dumps(GROUP_SPEC)}).insert(ignore_permissions=True)
+		self.assertIsNone(api._own_thread(chat))
 
 	def test_history_comes_from_the_users_own_answered_questions_in_the_chat(self):
 		from spice_facility.api import talk_to_data as api
