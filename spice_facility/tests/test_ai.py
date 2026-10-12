@@ -208,6 +208,49 @@ class TestCatalogAndQuery(AITestCase):
 		row = frappe.db.get_value("SPICE AI Query Log", log.name, ["status", "answer_json"], as_dict=True)
 		self.assertEqual((row.status, row.answer_json), ("Stopped", None))
 
+	def test_threads_group_a_users_questions_and_hide_other_users(self):
+		from spice_facility.api import talk_to_data as api
+
+		mine = frappe.generate_hash(length=16)
+		for question in ("First question", "Follow-up"):
+			frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "thread": mine,
+			                "question": question, "status": "Answered"}).insert(ignore_permissions=True)
+		theirs = frappe.generate_hash(length=16)
+		frappe.get_doc({"doctype": "SPICE AI Query Log", "user": "Guest", "thread": theirs,
+		                "question": "Someone else's", "status": "Answered"}).insert(ignore_permissions=True)
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"):
+			listed = {t["thread"]: t for t in api.threads()}
+			self.assertEqual((listed[mine]["title"], listed[mine]["turns"]), ("First question", 2))
+			self.assertNotIn(theirs, listed)
+			self.assertEqual([t["question"] for t in api.thread(mine)], ["First question", "Follow-up"])
+			self.assertEqual(api.thread(theirs), [])
+
+	def test_a_question_from_before_threads_opens_as_its_own_chat(self):
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Answered")
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"):
+			self.assertIn(log.name, {t["thread"] for t in api.threads()})
+			self.assertEqual([t["log"] for t in api.thread(log.name)], [log.name])
+
+	def test_deleting_a_chat_hides_it_but_keeps_the_audit_record(self):
+		from spice_facility.api import talk_to_data as api
+
+		chat = frappe.generate_hash(length=16)
+		log = frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "thread": chat,
+		                      "question": "To delete", "status": "Answered"}).insert(ignore_permissions=True)
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"):
+			self.assertEqual(api.delete_thread(chat)["deleted"], 1)
+			self.assertNotIn(chat, {t["thread"] for t in api.threads()})
+			self.assertEqual(api.thread(chat), [])
+		self.assertTrue(frappe.db.exists("SPICE AI Query Log", log.name))
+
+	def test_thread_ids_are_validated(self):
+		from spice_facility.api import talk_to_data as api
+
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), self.assertRaises(frappe.ValidationError):
+			api.thread("x' or '1'='1")
+
 	def test_stop_leaves_a_finished_question_alone(self):
 		from spice_facility.api import talk_to_data as api
 

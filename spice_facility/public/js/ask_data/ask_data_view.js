@@ -7,9 +7,15 @@ frappe.provide("spice_facility.ai");
 	const API = "spice_facility.api.talk_to_data";
 	const POLL_MS = 3000;
 	const LINK_TOKEN = /\[\[([^:\]]+):([^\]]+)\]\]/g;
-	// Chat history is per user: a shared desk tab must not show the previous user's questions or patients.
-	const STORE_PREFIX = "spice_ai_chat::";
+	// Conversations live on the server (talk_to_data.threads / thread); the tab remembers only which one is
+	// open, per user. Older builds kept whole answers here: those keys are removed on load.
+	const STORE_PREFIX = "spice_ai_thread::";
+	const LEGACY_PREFIX = "spice_ai_chat";
 	const store_key = () => STORE_PREFIX + frappe.session.user;
+	// Whether the chat list is shown on the full page: a per-viewer preference, kept across visits.
+	const SIDE_PREF = "spice_ai_chat_list_hidden";
+	// Below this width the page behaves like the drawer: the chat list covers the chat instead of sitting beside it.
+	const NARROW = "(max-width: 860px)";
 	const waiting = new Map(); // log -> resolve
 
 	frappe.realtime.on("spice_ai_answer", (data) => {
@@ -32,9 +38,6 @@ frappe.provide("spice_facility.ai");
 	const palette = () => Array.from({ length: PALETTE_SIZE }, (_v, i) =>
 		getComputedStyle(document.documentElement).getPropertyValue(`--sf-c${i + 1}`).trim()).filter(Boolean);
 	const icon = (name) => frappe.utils.icon(name, "sm");
-	// Groups beyond this, or with long names, read better as a ranked list than as squeezed bars.
-	const MAX_CHART_BARS = 8;
-	const MAX_CHART_LABEL = 12;
 	const MAX_INPUT_HEIGHT = 200; // px, about 8 lines
 	const SINGLE_LINE_HEIGHT = 40; // px: taller than this means the question wrapped
 
@@ -55,14 +58,13 @@ frappe.provide("spice_facility.ai");
 		return html + esc(raw.slice(last));
 	}
 
-	// What to draw for a result: a Frappe chart, a ranked bar list, or nothing (the KPI line says it all).
+	// What to draw for a result: groups as a ranked, clickable bar list (full names, drill-down per row); trends and
+	// pies as a Frappe chart; nothing for a single period (the KPI line says it all).
 	function visual_kind(a) {
 		const labels = a.chart?.labels || [];
 		if (!labels.length) return null;
 		if (a.kind === "series") return labels.length > 1 ? "chart" : null;
-		if (["pie", "donut"].includes(a.chart.type)) return "chart";
-		const long = labels.some((l) => String(l).length > MAX_CHART_LABEL);
-		return labels.length > MAX_CHART_BARS || long ? "bars" : "chart";
+		return ["pie", "donut"].includes(a.chart.type) ? "chart" : "bars";
 	}
 
 	// The headline figure: a number answer, or the server's total across all groups or periods.
@@ -93,7 +95,8 @@ frappe.provide("spice_facility.ai");
 			this.mode = mode;
 			this.get_page = get_page;
 			this.use_context = true;
-			this.history = this.load_history();
+			this.history = [];
+			this.thread_id = this.load_thread_id();
 			this.$root = $(`<div class="sf-ask sf-ask-${mode}"></div>`).appendTo(parent);
 			this.init();
 		}
@@ -106,8 +109,9 @@ frappe.provide("spice_facility.ai");
 			}
 			this.provider = this.settings.default_provider;
 			this.render_shell();
-			this.history.forEach((turn) => this.render_turn(turn));
 			this.refresh_context();
+			this.load_threads();
+			if (this.thread_id) await this.open_thread(this.thread_id);
 		}
 
 		// ─── shell ──────────────────────────────────────────────────────────
@@ -116,9 +120,21 @@ frappe.provide("spice_facility.ai");
 			const options = this.settings.providers.map((p) =>
 				`<option value="${esc(p.name)}" ${p.name === this.provider ? "selected" : ""}>${esc(p.name)} · ${esc(p.model || "")}</option>`).join("");
 			this.$root.html(`
+				<aside class="sf-ask-side" aria-label="${esc(S.chats)}">
+					<div class="sf-ask-side-head">
+						${this.side_button("panel-left-close", S.hide_chats)}
+						<span class="sf-ask-side-title">${esc(S.chats)}</span>
+						${this.new_chat_button()}
+					</div>
+					<div class="sf-ask-threads"></div>
+				</aside>
+				<div class="sf-ask-main">
 				<div class="sf-ask-head">
+					<div class="sf-ask-head-tools">
+						${this.side_button("panel-left-open", S.show_chats)}
+						${this.new_chat_button()}
+					</div>
 					<div class="sf-ask-context"></div>
-					<button class="btn btn-xs btn-default sf-ask-new">${esc(S.new_chat)}</button>
 				</div>
 				<div class="sf-ask-thread"></div>
 				<div class="sf-ask-examples"></div>
@@ -133,10 +149,17 @@ frappe.provide("spice_facility.ai");
 							<button class="sf-ask-send" type="submit" title="${esc(S.send)}" aria-label="${esc(S.send)}">${icon("arrow-up")}</button>
 						</div>
 					</div>
-				</form>`);
+				</form>
+				</div>`);
 			this.$thread = this.$root.find(".sf-ask-thread");
 			this.$root.find(".sf-ask-provider").on("change", (e) => { this.provider = e.target.value; this.render_note(); });
-			this.$root.find(".sf-ask-new").on("click", () => { this.history = []; this.save_history(); this.$thread.empty(); this.render_examples(); });
+			this.$root.find(".sf-ask-new").on("click", () => this.new_chat());
+			this.$root.find(".sf-ask-side-toggle").on("click", () => this.toggle_side());
+			this.$root.on("click", ".sf-ask-thread-item", (e) => this.open_thread(e.currentTarget.dataset.thread));
+			this.$root.on("click", ".sf-ask-thread-del", (e) => this.delete_thread(e.currentTarget.dataset.thread));
+			const wide_page_default = () => this.mode === "page" && !this.overlay() && !this.side_pref_hidden();
+			this.set_side(wide_page_default());
+			window.matchMedia(NARROW).addEventListener("change", () => this.set_side(wide_page_default()));
 			// While a question is being answered the send button is a Stop button.
 			this.$root.find(".sf-ask-form").on("submit", (e) => {
 				e.preventDefault();
@@ -208,10 +231,13 @@ frappe.provide("spice_facility.ai");
 			this.scroll();
 			try {
 				const page = use_context ? this.page() : null;
-				const { log } = await frappe.xcall(`${API}.ask`, {
+				const response = await frappe.xcall(`${API}.ask`, {
 					question, provider: this.provider, page: page ? JSON.stringify(page) : null, use_context: use_context ? 1 : 0,
 					history: JSON.stringify(this.history.slice(-2).map((t) => ({ question: t.question, spec: t.answer?.spec }))),
+					thread: this.thread_id,
 				});
+				if (response.thread !== this.thread_id) this.set_thread_id(response.thread);
+				const log = response.log;
 				pending.log = log;
 				const result = pending.stopped
 					? (this.request_stop(log), { status: "Stopped" })
@@ -220,7 +246,7 @@ frappe.provide("spice_facility.ai");
 				const turn = { question, log, status: result.status, error: result.error, answer: result.answer,
 				               asked_on: result.asked_on, duration_ms: result.duration_ms };
 				this.history.push(turn);
-				this.save_history();
+				this.load_threads();
 				$answer.replaceWith(this.answer_html(turn));
 				this.after_render($turn, turn);
 			} catch (error) {
@@ -304,6 +330,9 @@ frappe.provide("spice_facility.ai");
 		answer_html(turn) {
 			const S = this.S;
 			const a = turn.answer;
+			if (["Queued", "Running"].includes(turn.status)) {
+				return `<div class="sf-ask-answer"><span class="sf-muted">${esc(S.still_working)}</span></div>`;
+			}
 			if (turn.status === "Stopped") {
 				return `<div class="sf-ask-answer sf-ask-stopped"><span class="sf-muted">${esc(S.stopped)}</span>
 					<button class="btn btn-xs btn-default sf-ask-resend">${icon("rotate-ccw")} ${esc(S.resend)}</button></div>`;
@@ -450,20 +479,14 @@ frappe.provide("spice_facility.ai");
 
 		draw_chart(el, a) {
 			const type = { bar: "bar", line: "line", pie: "pie", donut: "donut" }[a.chart.type] || "bar";
-			const chart = new frappe.Chart(el, {
-				type, height: 220, isNavigable: type === "bar" || type === "line" ? 1 : 0,
+			return new frappe.Chart(el, {
+				// no isNavigable: Frappe Charts throws on every window resize with it; drill-down lives in the bar list
+				type, height: 220,
 				colors: palette(),
 				data: { labels: a.chart.labels, datasets: a.chart.datasets.map((d) => ({ name: d.name, values: d.values })) },
 				axisOptions: { xIsSeries: type === "line" ? 1 : 0 },
 				lineOptions: { regionFill: 1, dotSize: 4 },
 			});
-			if (a.drill) {
-				el.addEventListener("data-select", (e) => {
-					const opts = a.drill[e.index];
-					if (opts) this.open_list({ doctype: a.list_route.doctype, options: opts });
-				});
-			}
-			return chart;
 		}
 
 		open_list(route) {
@@ -485,22 +508,134 @@ frappe.provide("spice_facility.ai");
 			this.$thread.children().last().get(0)?.scrollIntoView({ block: "end", behavior: "smooth" });
 		}
 
-		// ─── per-tab history ────────────────────────────────────────────────
-		load_history() {
+		// ─── conversations ─────────────────────────────────────────────────
+		async load_threads() {
 			try {
-				Object.keys(sessionStorage).filter((k) => (k.startsWith(STORE_PREFIX) && k !== store_key()) || k === "spice_ai_chat")
-					.forEach((k) => sessionStorage.removeItem(k));
-				return JSON.parse(sessionStorage.getItem(store_key()) || "[]");
+				this.threads = await frappe.xcall(`${API}.threads`);
 			} catch (e) {
-				return [];
+				this.threads = [];
+			}
+			this.render_threads();
+		}
+
+		render_threads() {
+			const S = this.S;
+			const today = frappe.datetime.get_today();
+			const group_of = (when) => {
+				const days = frappe.datetime.get_day_diff(today, frappe.datetime.str_to_obj(when));
+				return days <= 0 ? S.today : days === 1 ? S.yesterday : days <= 7 ? S.previous_7_days : S.older;
+			};
+			const groups = new Map();
+			(this.threads || []).forEach((t) => {
+				const name = group_of(t.updated);
+				if (!groups.has(name)) groups.set(name, []);
+				groups.get(name).push(t);
+			});
+			const html = [...groups].map(([name, items]) => `<div class="sf-ask-threads-group">${esc(name)}</div>
+				${items.map((t) => `<div class="sf-ask-thread-row ${t.thread === this.thread_id ? "active" : ""}">
+					<button class="sf-ask-thread-item" data-thread="${esc(t.thread)}" title="${esc(t.title)}">${esc(t.title)}</button>
+					<button class="sf-ask-thread-del" data-thread="${esc(t.thread)}" title="${esc(S.delete_chat)}" aria-label="${esc(S.delete_chat)}">${icon("trash-2")}</button>
+				</div>`).join("")}`).join("");
+			this.$root.find(".sf-ask-threads").html(html || `<div class="sf-ask-threads-empty">${esc(S.no_threads)}</div>`);
+		}
+
+		async open_thread(thread_id) {
+			if (this.busy) return;
+			if (this.overlay()) this.set_side(false);
+			let turns = [];
+			try {
+				turns = await frappe.xcall(`${API}.thread`, { thread: thread_id });
+			} catch (e) {
+				turns = [];
+			}
+			if (!turns.length) return this.new_chat();
+			this.set_thread_id(thread_id);
+			this.history = turns;
+			this.$thread.empty();
+			turns.forEach((turn) => this.render_turn(turn));
+			this.render_examples();
+			this.render_threads();
+			this.scroll();
+		}
+
+		new_chat() {
+			if (this.busy) this.stop();
+			if (this.overlay()) this.set_side(false);
+			this.set_thread_id(null);
+			this.history = [];
+			this.$thread.empty();
+			this.render_examples();
+			this.render_threads();
+			this.$root.find(".sf-ask-input").trigger("focus");
+		}
+
+		delete_thread(thread_id) {
+			const S = this.S;
+			const title = (this.threads || []).find((t) => t.thread === thread_id)?.title || "";
+			frappe.confirm(S.delete_confirm(title), async () => {
+				await frappe.xcall(`${API}.delete_thread`, { thread: thread_id });
+				frappe.show_alert({ message: S.chat_deleted, indicator: "green" });
+				if (thread_id === this.thread_id) this.new_chat();
+				this.load_threads();
+			});
+		}
+
+		// ─── chat list visibility ──────────────────────────────────────────
+		side_button(name, label) {
+			return `<button class="btn btn-xs btn-default sf-ask-icon-btn sf-ask-side-toggle" title="${esc(label)}" aria-label="${esc(label)}">${icon(name)}</button>`;
+		}
+
+		new_chat_button() {
+			const label = this.S.new_chat;
+			return `<button class="btn btn-xs btn-default sf-ask-icon-btn sf-ask-new" title="${esc(label)}" aria-label="${esc(label)}">${icon("square-pen")}</button>`;
+		}
+
+		// In the drawer and on narrow screens the list covers the chat; on the wide page it sits beside it.
+		overlay() {
+			return this.mode === "drawer" || window.matchMedia(NARROW).matches;
+		}
+
+		toggle_side() {
+			const open = !this.$root.hasClass("sf-side-open");
+			this.set_side(open);
+			if (!this.overlay()) {
+				try {
+					localStorage.setItem(SIDE_PREF, open ? "0" : "1");
+				} catch (e) {
+					// storage blocked: the choice lasts for this page only
+				}
 			}
 		}
 
-		save_history() {
+		set_side(open) {
+			this.$root.toggleClass("sf-side-open", open);
+		}
+
+		side_pref_hidden() {
 			try {
-				sessionStorage.setItem(store_key(), JSON.stringify(this.history.slice(-20)));
+				return localStorage.getItem(SIDE_PREF) === "1";
 			} catch (e) {
-				// storage blocked: history lives for this view only
+				return false;
+			}
+		}
+
+		set_thread_id(thread_id) {
+			this.thread_id = thread_id;
+			try {
+				if (thread_id) sessionStorage.setItem(store_key(), thread_id);
+				else sessionStorage.removeItem(store_key());
+			} catch (e) {
+				// storage blocked: the open chat is simply not remembered across reloads
+			}
+		}
+
+		load_thread_id() {
+			try {
+				Object.keys(sessionStorage).filter((k) => k.startsWith(LEGACY_PREFIX) || (k.startsWith(STORE_PREFIX) && k !== store_key()))
+					.forEach((k) => sessionStorage.removeItem(k));
+				return sessionStorage.getItem(store_key());
+			} catch (e) {
+				return null;
 			}
 		}
 	}

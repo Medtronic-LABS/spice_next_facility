@@ -8,9 +8,45 @@
 	--sf-accent: #8d98e6;
 	--sf-c1: #8d98e6; --sf-c2: #7f97c4; --sf-c3: #86b1a4; --sf-c4: #c4a679; --sf-c5: #b393ae; --sf-c6: #8e96a3;
 }
-.sf-ask { display: flex; flex-direction: column; gap: 10px; }
-.sf-ask-page { max-width: 1100px; margin: 0 auto; padding: 8px 0 24px; }
-.sf-ask-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sf-ask { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+.sf-ask-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* chat list: beside the chat on the wide Ask Data page (when shown); covering it in the drawer and on narrow
+   screens. `sf-side-open` on .sf-ask is the shown state (ask_data_view.js). */
+.sf-ask-side { display: none; flex-direction: column; gap: 2px; min-width: 0; }
+.sf-ask.sf-side-open .sf-ask-side { display: flex; }
+.sf-ask-page.sf-side-open { grid-template-columns: 250px minmax(0, 1fr); }
+.sf-ask-page.sf-side-open .sf-ask-side { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow-y: auto; padding-right: 4px; }
+.sf-ask-drawer.sf-side-open .sf-ask-main { display: none; }
+/* the header's own toggle + new chat only while the list is hidden */
+.sf-ask-head-tools { display: flex; gap: 4px; }
+.sf-ask.sf-side-open .sf-ask-head-tools { display: none; }
+.sf-ask-side-head { display: flex; align-items: center; gap: 6px; padding: 2px 2px 8px; }
+.sf-ask-side-title { flex: 1; font-weight: 600; }
+.sf-ask-threads-group { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); padding: 10px 10px 4px; }
+.sf-ask-thread-row { display: flex; align-items: center; border-radius: 8px; }
+.sf-ask-thread-row:hover { background: var(--subtle-fg); }
+.sf-ask-thread-row.active { background: color-mix(in srgb, var(--sf-accent) 12%, var(--fg-color)); }
+.sf-ask-thread-item { flex: 1; min-width: 0; border: 0; background: none; padding: 6px 10px; text-align: left; font-size: var(--text-sm); color: var(--text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sf-ask-thread-row.active .sf-ask-thread-item { font-weight: 500; }
+/* delete appears on hover / keyboard focus / the open chat, like ChatGPT */
+.sf-ask-thread-del { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-right: 4px; border: 0; border-radius: 6px; background: none; color: var(--text-muted); visibility: hidden; flex: none; }
+.sf-ask-thread-row:hover .sf-ask-thread-del, .sf-ask-thread-row:focus-within .sf-ask-thread-del, .sf-ask-thread-row.active .sf-ask-thread-del { visibility: visible; }
+.sf-ask-thread-del:hover { color: var(--red-600); background: color-mix(in srgb, var(--red-500, #ef4444) 10%, transparent); }
+.sf-ask-thread-del .icon { width: 14px; height: 14px; }
+.sf-ask-threads-empty { padding: 8px 10px; font-size: var(--text-sm); color: var(--text-muted); }
+.sf-ask-side .sf-ask-icon-btn .icon, .sf-ask-head-tools .icon { width: 16px; height: 16px; }
+.sf-ask-side .sf-ask-icon-btn, .sf-ask-head-tools .sf-ask-icon-btn { width: 30px; height: 30px; border: 0; background: none; box-shadow: none; }
+.sf-ask-side .sf-ask-icon-btn:hover, .sf-ask-head-tools .sf-ask-icon-btn:hover { background: var(--subtle-fg); color: var(--text-color); }
+@media (max-width: 860px) {
+	.sf-ask-page.sf-side-open { grid-template-columns: minmax(0, 1fr); }
+	.sf-ask-page.sf-side-open .sf-ask-side { position: static; max-height: none; }
+	.sf-ask-page.sf-side-open .sf-ask-main { display: none; }
+}
+
+.sf-ask-page { max-width: 1280px; margin: 0 auto; padding: 8px 0 24px; }
+.sf-ask-head { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+.sf-ask-context { flex: 1; min-width: 0; }
+.sf-ask-head .icon { width: 14px; height: 14px; }
 .sf-ask-chip { border: 1px solid var(--border-color); background: var(--fg-color); border-radius: 999px; padding: 3px 12px; font-size: var(--text-sm); color: var(--text-muted); }
 .sf-ask-chip.active { border-color: var(--primary); color: var(--primary); background: var(--blue-50, var(--fg-color)); }
 .sf-ask-thread { display: flex; flex-direction: column; gap: 14px; }
@@ -22,7 +58,9 @@
 /* no title (record answers): the icons float in the corner instead of taking a row */
 .sf-ask-card-head.sf-bare { position: absolute; top: 8px; right: 10px; }
 .sf-ask-card-head.sf-bare ~ .sf-ask-text { padding-right: 60px; }
-.sf-ask-answer .icon { flex: none; width: 14px; height: 14px; margin: 0; }
+/* Frappe centres .icon with an auto margin; inside Ask Data icons sit inline with their labels */
+.sf-ask .icon { flex: none; margin: 0; }
+.sf-ask-answer .icon { width: 14px; height: 14px; }
 .sf-ask-title { flex: 1; display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .sf-ask-spark { display: inline-flex; color: var(--sf-accent); }
 .sf-ask-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; color: var(--text-muted); }

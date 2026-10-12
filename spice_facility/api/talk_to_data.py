@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import re
 
 import frappe
 from frappe import _
@@ -20,6 +21,11 @@ MAX_QUESTION = 500
 BUCKET_INTERVAL = {"day": "Daily", "week": "Weekly", "month": "Monthly", "year": "Yearly"}
 CHART_TYPE = {"bar": "Bar", "line": "Line", "pie": "Pie", "donut": "Donut"}
 IN_FLIGHT = ("Queued", "Running")
+THREAD_ID = re.compile(r"^[A-Za-z0-9]{10,32}$")
+MAX_THREADS = 50
+MAX_THREAD_TURNS = 50
+MAX_THREAD_DELETE = 500
+THREAD_SCAN = 500  # recent questions scanned to build the chat list
 STOPPED = "Stopped"
 
 
@@ -54,7 +60,7 @@ def _user_allowed():
 
 @frappe.whitelist(methods=["POST"])
 def ask(question: str, provider: str | None = None, page: str | None = None, use_context: int = 1,
-        history: str | None = None) -> dict:
+        history: str | None = None, thread: str | None = None) -> dict:
 	ensure_ai_access()
 	if not get_config().chat_enabled:
 		frappe.throw(_("Ask Data is turned off."), frappe.ValidationError)
@@ -63,14 +69,15 @@ def ask(question: str, provider: str | None = None, page: str | None = None, use
 		frappe.throw(_("Please type a question."), frappe.ValidationError)
 	enforce_rate_limit()
 	page = json.loads(page) if isinstance(page, str) and page else (page or None)
-	log = frappe.get_doc({"doctype": LOG, "user": frappe.session.user, "question": question, "status": "Queued",
+	thread = thread if thread and THREAD_ID.match(thread) else frappe.generate_hash(length=16)
+	log = frappe.get_doc({"doctype": LOG, "user": frappe.session.user, "thread": thread, "question": question, "status": "Queued",
 	                      "provider": provider or get_config().chat_default_provider,
 	                      "context_doctype": (page or {}).get("doctype") if use_context else None,
 	                      "context_name": (page or {}).get("name") if use_context else None}).insert(ignore_permissions=True)
 	frappe.enqueue("spice_facility.api.talk_to_data.run", queue="long", timeout=600, log=log.name, provider=provider,
 	               page=page, use_context=int(use_context), history=history, job_id=_job_id(log.name),
 	               enqueue_after_commit=True)
-	return {"log": log.name, "status": "Queued"}
+	return {"log": log.name, "status": "Queued", "thread": thread}
 
 
 def _job_id(log):
@@ -108,6 +115,59 @@ def run(log, provider=None, page=None, use_context=1, history=None):
 	                        user=row.user, after_commit=True)
 
 
+def _turn(row):
+	return {"log": row.name, "status": row.status, "question": row.question, "error": row.error,
+	        "answer": json.loads(row.answer_json) if row.answer_json else None,
+	        "asked_on": row.creation, "duration_ms": row.duration_ms}
+
+
+@frappe.whitelist()
+def threads() -> list:
+	"""The user's own conversations, newest first: title (first question), last activity, number of questions.
+
+	Questions asked before threads existed have no thread and stand alone (keyed by their log name)."""
+	ensure_ai_access()
+	rows = frappe.get_all(LOG, {"user": frappe.session.user, "hidden": 0}, ["name", "thread", "question", "creation"],
+	                      order_by="creation desc", limit=THREAD_SCAN)
+	found = {}
+	for row in rows:
+		key = row.thread or row.name
+		entry = found.setdefault(key, {"thread": key, "updated": row.creation, "turns": 0})
+		entry["turns"] += 1
+		entry["title"] = row.question  # rows run newest to oldest, so the last one seen is the first question
+	return list(found.values())[:MAX_THREADS]
+
+
+@frappe.whitelist()
+def thread(thread: str) -> list:
+	"""The turns of one of the user's conversations, oldest first."""
+	ensure_ai_access()
+	fields = ["name", "status", "question", "error", "answer_json", "creation", "duration_ms"]
+	return [_turn(r) for r in frappe.get_all(LOG, _thread_filters(thread), fields, order_by="creation asc",
+	                                         limit=MAX_THREAD_TURNS)]
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_thread(thread: str) -> dict:
+	"""Remove one of the user's chats from their list. The questions stay in the query log (audit, rate limits)."""
+	ensure_ai_access()
+	names = frappe.get_all(LOG, _thread_filters(thread), pluck="name", limit=MAX_THREAD_DELETE)
+	for name in names:
+		frappe.db.set_value(LOG, name, "hidden", 1, update_modified=False)
+	return {"thread": thread, "deleted": len(names)}
+
+
+def _thread_filters(thread):
+	"""The user's own, not deleted, questions of one chat. A question from before threads existed has no thread:
+	its chat key is its own log name."""
+	if not THREAD_ID.match(thread or ""):
+		frappe.throw(_("Not a valid chat."), frappe.ValidationError)
+	mine = {"user": frappe.session.user, "hidden": 0}
+	if frappe.db.exists(LOG, {**mine, "thread": thread}):
+		return {**mine, "thread": thread}
+	return {**mine, "name": thread, "thread": ["is", "not set"]}
+
+
 @frappe.whitelist(methods=["POST"])
 def stop(log: str) -> dict:
 	"""Stop a question the user no longer wants: drop it from the queue, or discard the answer when it arrives."""
@@ -122,10 +182,7 @@ def stop(log: str) -> dict:
 
 @frappe.whitelist()
 def get_answer(log: str) -> dict:
-	row = _own_log(log)
-	return {"log": row.name, "status": row.status, "question": row.question, "error": row.error,
-	        "answer": json.loads(row.answer_json) if row.answer_json else None,
-	        "asked_on": row.creation, "duration_ms": row.duration_ms}
+	return _turn(_own_log(log))
 
 
 @frappe.whitelist()

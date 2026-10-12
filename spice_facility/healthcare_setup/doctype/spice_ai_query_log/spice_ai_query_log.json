@@ -6,11 +6,13 @@
  "issingle": 0,
  "engine": "InnoDB",
  "creation": "2026-10-09 12:00:00.000000",
- "modified": "2026-10-13 00:45:00.000000",
+ "modified": "2026-10-13 01:20:00.000000",
  "modified_by": "Administrator",
  "owner": "Administrator",
  "field_order": [
   "user",
+  "thread",
+  "hidden",
   "provider",
   "model",
   "status",
@@ -35,6 +37,22 @@
    "read_only": 1,
    "in_list_view": 1,
    "in_standard_filter": 1
+  },
+  {
+   "fieldname": "thread",
+   "fieldtype": "Data",
+   "label": "Thread",
+   "read_only": 1,
+   "search_index": 1,
+   "description": "Groups the questions of one Ask Data conversation."
+  },
+  {
+   "fieldname": "hidden",
+   "fieldtype": "Check",
+   "label": "Deleted by User",
+   "read_only": 1,
+   "default": "0",
+   "description": "The user deleted this chat: it no longer appears in their chat list, but the record is kept for audit."
   },
   {
    "fieldname": "provider",
