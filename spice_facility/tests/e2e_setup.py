@@ -18,9 +18,20 @@ CHAT_SETTINGS = {"chat_enabled": 1, "floating_chat_enabled": 1}
 def prepare():
 	if not fake_provider_allowed():
 		frappe.throw("Set allow_tests and spice_ai_fake_provider on this site first: the e2e suite needs the fake model.")
+	_skip_setup_wizard()
 	ensure_fixtures()
 	for field, value in CHAT_SETTINGS.items():
 		frappe.db.set_single_value(SETTINGS, field, value)
 	frappe.db.commit()
 	frappe.clear_cache()
 	print("e2e site ready")
+
+
+def _skip_setup_wizard():
+	"""A fresh CI site has never run the setup wizard, and the desk sends every page there until it has. Ask Data
+	needs no company or fiscal year, so a test site is simply marked as set up (frappe.is_setup_complete)."""
+	if frappe.is_setup_complete():
+		return
+	for app in ("frappe", "erpnext"):
+		frappe.db.set_value("Installed Application", {"app_name": app}, "is_setup_complete", 1)
+	frappe.db.set_single_value("System Settings", "setup_complete", 1)
