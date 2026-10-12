@@ -1,13 +1,15 @@
-"""Demo data across every Frappe Health module, telling one patient story per flow.
+"""Demo data across every Frappe Health module, telling one patient story per flow, plus a cohort of
+synthetic outpatients so lists, dashboards and Ask Data have volume.
 
     bench --site <site> execute spice_facility.demo.seed.run
-    bench --site <site> execute spice_facility.demo.seed.run --kwargs "{'company': 'MDT'}"
+    bench --site <site> execute spice_facility.demo.seed.run --kwargs "{'company': 'MDT', 'patients': 50}"
 
-Re-runnable: masters are get-or-create, and a patient's story is seeded only once. Never runs on
-install; demo data is opt-in.
+Re-runnable: masters are get-or-create, a patient's story is seeded only once, and the cohort only tops
+the site up to `patients` in total. Never runs on install; demo data is opt-in. All names are fictional.
 """
 
 import json
+import random
 import traceback
 
 import frappe
@@ -1503,7 +1505,169 @@ def seed_phase2(p, dr, units, meds, labs, procs, schedule):
 	section("  trend history", seed_trend_history, p)
 
 
-def run(company=None):
+# ─── synthetic outpatient cohort ────────────────────────────────────────────
+
+COHORT_FIRST = {
+	"Male": ("Amit", "Rahul", "Sanjay", "Deepak", "Manoj", "Vijay", "Ravi", "Ashok", "Naveen", "Karan",
+	         "Imran", "Prakash", "Dinesh", "Sunil", "Ajay", "Farhan", "Rohit", "Mahesh", "Tarun", "Yusuf"),
+	"Female": ("Anjali", "Pooja", "Rekha", "Asha", "Shabnam", "Geeta", "Divya", "Nisha", "Rani", "Swati",
+	           "Komal", "Farida", "Usha", "Jyoti", "Pallavi", "Seema", "Ritu", "Zoya", "Bhavna", "Kiran"),
+}
+COHORT_LAST = ("Yadav", "Mishra", "Das", "Pillai", "Khan", "Joshi", "Bose", "Menon", "Thakur", "Ansari",
+               "Chauhan", "Naidu", "Banerjee", "Kulkarni", "Saxena", "Rathore", "Hegde", "Sinha")
+COHORT_JOBS = ("Farmer", "Shopkeeper", "Teacher", "Driver", "Homemaker", "Labourer", "Clerk", "Tailor", "Student",
+               "Nurse", "Electrician", "Retired")
+COHORT_BLOOD = ("A Positive", "B Positive", "O Positive", "AB Positive", "O Negative", "A Negative")
+COHORT_SLOT_START, COHORT_SLOT_MINUTES = 14 * 60, 20  # afternoons, clear of the stories' morning bookings
+
+
+def _num(rng, low, high, digits=0):
+	value = rng.uniform(low, high)
+	return str(round(value, digits)) if digits else str(round(value))
+
+
+# Each profile: who sees the patient, the visit content, results and vitals drawn from realistic ranges, and
+# how many visits (chronic conditions come back for follow-up; acute ones are seen once).
+COHORT_PROFILES = (
+	{"key": "dm", "weight": 5, "dr": "ananya", "unit": "opd1", "sex": None, "age": (35, 72), "visits": (2, 3),
+	 "complaints": ["Polyuria", "Excessive Thirst", "Fatigue"], "diagnoses": ["Type 2 Diabetes Mellitus"],
+	 "meds": ["Metformin"], "labs": ["HBA1C", "FBS"], "followup_labs": ["HBA1C"],
+	 "results": lambda r, n: {"HBA1C": _num(r, 7.0, 10.5, 1) if n == 0 else _num(r, 6.3, 8.0, 1), "FBS": _num(r, 120, 240)},
+	 "vitals": lambda r, n: {"bp_systolic": _num(r, 124, 146), "bp_diastolic": _num(r, 78, 92)},
+	 "comment": "Glycaemic control reviewed; diet and exercise counselling."},
+	{"key": "htn", "weight": 5, "dr": "vikram", "unit": "opd2", "sex": None, "age": (38, 78), "visits": (2, 3),
+	 "complaints": ["Headache", "Dizziness"], "diagnoses": ["Essential Hypertension"],
+	 "meds": ["Amlodipine"], "labs": ["CREAT"], "followup_labs": [],
+	 "results": lambda r, n: {"CREAT": _num(r, 0.7, 1.4, 1)},
+	 "vitals": lambda r, n: {"bp_systolic": _num(r, 148, 176) if n == 0 else _num(r, 128, 146),
+	                         "bp_diastolic": _num(r, 92, 106) if n == 0 else _num(r, 80, 92)},
+	 "comment": "BP above target; salt restriction and adherence discussed."},
+	{"key": "dm_htn", "weight": 3, "dr": "ananya", "unit": "opd1", "sex": None, "age": (45, 75), "visits": (2, 3),
+	 "complaints": ["Fatigue", "Headache"], "diagnoses": ["Type 2 Diabetes Mellitus", "Essential Hypertension"],
+	 "meds": ["Metformin", "Amlodipine", "Atorvastatin"], "labs": ["HBA1C", "LIPID"], "followup_labs": ["HBA1C"],
+	 "results": lambda r, n: {"HBA1C": _num(r, 7.5, 11.0, 1) if n == 0 else _num(r, 6.8, 8.6, 1),
+	                          "LIPID": {"Total Cholesterol": _num(r, 180, 260), "LDL Cholesterol": _num(r, 100, 170),
+	                                    "HDL Cholesterol": _num(r, 34, 52), "Triglycerides": _num(r, 140, 260)}},
+	 "vitals": lambda r, n: {"bp_systolic": _num(r, 142, 168), "bp_diastolic": _num(r, 88, 100)},
+	 "comment": "Diabetes with hypertension; cardiovascular risk reduction started."},
+	{"key": "uri", "weight": 5, "dr": "ananya", "unit": "opd1", "sex": None, "age": (6, 60), "visits": (1, 1),
+	 "complaints": ["Fever", "Cough", "Sore Throat"], "diagnoses": ["Acute Upper Respiratory Infection"],
+	 "meds": ["Paracetamol", "Cetirizine"], "labs": [], "followup_labs": [],
+	 "results": lambda r, n: {},
+	 "vitals": lambda r, n: {"temperature": _num(r, 99.5, 101.8, 1), "bp_systolic": _num(r, 108, 128),
+	                         "bp_diastolic": _num(r, 70, 82)},
+	 "comment": "Viral URI; symptomatic care, return if fever beyond 3 days."},
+	{"key": "anaemia", "weight": 3, "dr": "ananya", "unit": "opd1", "sex": "Female", "age": (18, 55), "visits": (2, 2),
+	 "complaints": ["Fatigue", "Dizziness"], "diagnoses": ["Iron Deficiency Anaemia"],
+	 "meds": ["Ferrous Sulfate"], "labs": ["CBC"], "followup_labs": ["CBC"],
+	 "results": lambda r, n: {"CBC": {"Haemoglobin": _num(r, 7.6, 10.2, 1) if n == 0 else _num(r, 10.0, 12.0, 1),
+	                                  "Total WBC Count": _num(r, 5200, 9000), "Platelet Count": _num(r, 1.8, 3.6, 1),
+	                                  "RBC Count": _num(r, 3.1, 4.2, 1)}},
+	 "vitals": lambda r, n: {"bp_systolic": _num(r, 100, 120), "bp_diastolic": _num(r, 64, 78)},
+	 "comment": "Microcytic anaemia; oral iron started, dietary advice."},
+	{"key": "anc", "weight": 3, "dr": "fatima", "unit": "opd3", "sex": "Female", "age": (20, 34), "visits": (2, 3),
+	 "type": "Antenatal Check-up", "complaints": ["Nausea", "Fatigue"], "diagnoses": ["Supervision of Normal Pregnancy"],
+	 "meds": ["Folic Acid", "Ferrous Sulfate"], "labs": ["CBC"], "followup_labs": [],
+	 "results": lambda r, n: {"CBC": {"Haemoglobin": _num(r, 9.6, 12.4, 1), "Total WBC Count": _num(r, 6000, 10500),
+	                                  "Platelet Count": _num(r, 1.8, 3.4, 1), "RBC Count": _num(r, 3.6, 4.4, 1)}},
+	 "vitals": lambda r, n: {"bp_systolic": _num(r, 104, 124), "bp_diastolic": _num(r, 66, 80)},
+	 "comment": "ANC visit: fundal height appropriate, fetal heart sounds present."},
+	{"key": "angina", "weight": 2, "dr": "vikram", "unit": "opd2", "sex": None, "age": (45, 72), "visits": (2, 2),
+	 "complaints": ["Chest Pain", "Breathlessness"], "diagnoses": ["Stable Angina (suspected)"],
+	 "meds": ["Atorvastatin"], "labs": ["LIPID"], "followup_labs": [],
+	 "results": lambda r, n: {"LIPID": {"Total Cholesterol": _num(r, 200, 280), "LDL Cholesterol": _num(r, 120, 190),
+	                                    "HDL Cholesterol": _num(r, 30, 45), "Triglycerides": _num(r, 150, 280)}},
+	 "vitals": lambda r, n: {"bp_systolic": _num(r, 130, 158), "bp_diastolic": _num(r, 82, 96)},
+	 "comment": "Exertional chest pain; statin started, stress test advised."},
+	{"key": "pneumonia", "weight": 2, "dr": "ananya", "unit": "opd1", "sex": None, "age": (20, 75), "visits": (1, 1),
+	 "complaints": ["Fever", "Cough", "Breathlessness"], "diagnoses": ["Community-acquired Pneumonia"],
+	 "meds": ["Amoxicillin", "Paracetamol"], "labs": ["CBC"], "followup_labs": [],
+	 "results": lambda r, n: {"CBC": {"Haemoglobin": _num(r, 11.5, 14.5, 1), "Total WBC Count": _num(r, 12500, 18500),
+	                                  "Platelet Count": _num(r, 1.6, 3.2, 1), "RBC Count": _num(r, 4.0, 5.0, 1)}},
+	 "vitals": lambda r, n: {"temperature": _num(r, 100.8, 102.6, 1), "bp_systolic": _num(r, 104, 126),
+	                         "bp_diastolic": _num(r, 66, 80), "respiratory_rate": _num(r, 22, 28)},
+	 "comment": "Clinical pneumonia; oral antibiotics, review in 48 hours."},
+	{"key": "wheeze", "weight": 2, "dr": "ananya", "unit": "opd1", "sex": None, "age": (1, 4), "visits": (1, 1),
+	 "complaints": ["Wheezing", "Cough"], "diagnoses": ["Acute Bronchiolitis"],
+	 "meds": ["Salbutamol"], "labs": [], "followup_labs": [],
+	 "results": lambda r, n: {},
+	 "vitals": lambda r, n: {"temperature": _num(r, 99.0, 100.6, 1), "respiratory_rate": _num(r, 34, 46)},
+	 "comment": "Bronchiolitis; nebulised salbutamol, hydration, warning signs explained."},
+)
+
+
+def _cohort_person(i, rng):
+	"""The i-th synthetic patient: a fixed name and profile, so re-runs find the same people."""
+	profile = rng.choices(COHORT_PROFILES, weights=[pr["weight"] for pr in COHORT_PROFILES])[0]
+	sex = profile["sex"] or rng.choice(("Male", "Female"))
+	first = COHORT_FIRST[sex][i % len(COHORT_FIRST[sex])]
+	last = COHORT_LAST[(i * 7 + i // len(COHORT_FIRST[sex])) % len(COHORT_LAST)]
+	age = rng.randint(*profile["age"])
+	dob = add_days(TODAY, -(age * 365 + rng.randint(0, 364)))
+	return profile, sex, first, last, dob, age
+
+
+def _cohort_slot(used, practitioner, date):
+	"""Next free afternoon slot for a practitioner on a date (appointments for one doctor must not overlap)."""
+	n = used.get((practitioner, date), 0)
+	used[(practitioner, date)] = n + 1
+	minutes = COHORT_SLOT_START + n * COHORT_SLOT_MINUTES
+	return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+
+
+def seed_cohort(dr, units, meds, labs, target):
+	"""Top the site up to `target` patients with fictional outpatients, each with 1-3 visits over the last year:
+	appointment, vitals, encounter (complaints, diagnoses, prescriptions, lab orders) and lab results."""
+	created = failed = 0
+	used = {}
+	for i in range(1, target * 3):
+		if frappe.db.count("Patient") >= target:
+			break
+		rng = random.Random(f"spice-cohort-{i}")
+		profile, sex, first, last, dob, age = _cohort_person(i, rng)
+		if frappe.db.exists("Patient", {"first_name": first, "last_name": last}):
+			continue
+		frappe.db.savepoint("cohort_patient")
+		try:
+			_seed_cohort_patient(i, rng, used, dr, units, meds, labs, profile, sex, first, last, dob, age)
+			frappe.db.commit()
+			created += 1
+		except Exception:
+			frappe.db.rollback(save_point="cohort_patient")
+			failed += 1
+			print(f"  !! cohort patient {first} {last} ({profile['key']}) failed")
+			traceback.print_exc(limit=-3)
+	log(f"{created} cohort patients added ({failed} failed); {frappe.db.count('Patient')} patients in total")
+
+
+def _seed_cohort_patient(i, rng, used, dr, units, meds, labs, profile, sex, first, last, dob, age):
+	patient = make_patient(first, last, sex, dob, blood_group=rng.choice(COHORT_BLOOD), mobile=f"98770{i:05d}",
+	                       occupation="Child" if age < 5 else rng.choice(COHORT_JOBS),
+	                       marital_status="Single" if age < 22 else rng.choice(("Married", "Married", "Single", "Widow")))
+	practitioner, unit = dr[profile["dr"]], units[profile["unit"]]
+	visits = rng.randint(*profile["visits"])
+	day = -rng.randint(30 * visits + 7, 330)
+	height = round(rng.uniform(0.75, 1.0), 2) if age < 5 else round(rng.uniform(1.48, 1.80), 2)
+	weight = round(rng.uniform(9, 16), 1) if age < 5 else round(rng.uniform(46, 88), 1)
+	for n in range(visits):
+		date = d(day)
+		time = _cohort_slot(used, practitioner, date)
+		appt_type = profile.get("type") or ("Consultation" if n == 0 else "Follow-up")
+		appt = book(patient, practitioner, unit, appt_type, date, time)
+		lab_keys = profile["labs"] if n == 0 else profile["followup_labs"]
+		enc = encounter(appt, profile["complaints"] if n == 0 else profile["complaints"][:1], profile["diagnoses"],
+		                meds=[meds[m] for m in profile["meds"]], labs=[labs[k] for k in lab_keys],
+		                comment=profile["comment"] if n == 0 else "Follow-up review; plan continued.")
+		readings = {"pulse": _num(rng, 70, 98), "respiratory_rate": _num(rng, 14, 20), "temperature": "98.4",
+		            "height": height, "weight": weight, **profile["vitals"](rng, n)}
+		vitals(patient, date, time, encounter=enc.name, appointment=appt.name, **readings)
+		results = {labs[k]: v for k, v in profile["results"](rng, n).items() if k in lab_keys}
+		if results:
+			lab_results(enc, results)
+		day += rng.randint(28, 63)
+
+
+def run(company=None, patients=50):
 	global COMPANY, ABBR, TODAY
 	COMPANY = company or frappe.defaults.get_global_default("company")
 	if not COMPANY or not frappe.db.exists("Company", COMPANY):
@@ -1520,10 +1684,13 @@ def run(company=None):
 	meds = seed_medications()
 	labs = seed_lab_templates()
 	procs = seed_procedures()
+	target_patients = int(patients)
 	patients = seed_patients()
 	frappe.db.commit()
 	seed_stories(patients, dr, units, meds, labs, procs)
 	frappe.db.commit()
 	seed_phase2(patients, dr, units, meds, labs, procs, schedule)
 	frappe.db.commit()
+	print(f"Patient cohort (up to {target_patients} patients)")
+	seed_cohort(dr, units, meds, labs, target_patients)
 	print("Done.")

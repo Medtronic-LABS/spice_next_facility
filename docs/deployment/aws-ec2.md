@@ -157,6 +157,7 @@ before touching the host); no secret may contain a quote or newline.
 | `AWS_DEFAULT_REGION` | `ap-south-1` |
 | `DATA_VOLUME_ID` | that environment's data volume, e.g. `vol-0123456789abcdef0` (needed until it is mounted) |
 | `DATA_DIR` | optional, default `/srv/spice-data` |
+| `SPICE_ALLOW_DEMO_SEED` | `1` on dev only: lets a System Manager load demo data over the API (anything else = off) |
 
 The image is pushed with the workflow's own `GITHUB_TOKEN` (`packages: write`) — no registry secret needed
 for publishing.
@@ -175,7 +176,10 @@ Push to `develop` (dev) or `training` (training), or run the workflow manually o
 
 Then open the environment's URL, log in as Administrator and complete the **ERPNext setup wizard** (company,
 currency, fiscal year). Health's masters (departments, practitioners, service units) come next; demo data
-can be loaded with `bench --site <SITE_NAME> execute spice_facility.demo.seed.run` (non-production only).
+can be loaded with `bench --site <SITE_NAME> execute spice_facility.demo.seed.run --kwargs "{'patients': 50}"`
+(non-production only), or, where `SPICE_ALLOW_DEMO_SEED=1`, over the API as a System Manager:
+`curl -X POST -H "Authorization: token <key>:<secret>" -d patients=50 https://<host>/api/method/spice_facility.demo.api.seed`
+(runs as a background job; the stories plus a synthetic cohort up to 50 patients, re-runnable).
 
 To use Ask Data with Claude, OpenAI or Gemini, open **SPICE AI Settings**, enable the provider, set the model and use
 **Test** — keys supplied as secrets above are picked up automatically.

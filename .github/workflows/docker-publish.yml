@@ -492,6 +492,7 @@ jobs:
       - name: Write the host's .env
         env:
           SITE_NAME: ${{ vars.SITE_NAME }}
+          SPICE_ALLOW_DEMO_SEED: ${{ vars.SPICE_ALLOW_DEMO_SEED == '1' && '1' || '0' }}
           DOMAIN: ${{ vars.DOMAIN }}
           AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'ap-south-1' }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
@@ -512,6 +513,7 @@ jobs:
           DB_ROOT_PASSWORD='${DB_ROOT_PASSWORD}'
           DB_TLS='off'
           DATA_DIR='${DATA_DIR}'
+          SPICE_ALLOW_DEMO_SEED='${SPICE_ALLOW_DEMO_SEED}'
           SPICE_AI_OLLAMA_ENABLED='0'
           SPICE_AI_ANTHROPIC_API_KEY='${SPICE_AI_ANTHROPIC_API_KEY}'
           SPICE_AI_OPENAI_API_KEY='${SPICE_AI_OPENAI_API_KEY}'
