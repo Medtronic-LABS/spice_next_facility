@@ -8,6 +8,7 @@ underlying records change, not because the clock moved.
 
 import hashlib
 import json
+import re
 
 import frappe
 from frappe import _
@@ -143,7 +144,7 @@ def _base_context(doc):
 		                                                              "status": ["not in", ["Completed", "Cancelled"]]},
 		                                             ["activity", "requested_start_time"], "requested_start_time asc", 10)}
 	if doc.doctype == "Emergency Record":
-		return {**record, "emergency": fs.emergency_triage(doc), "patient": doc.patient_name}
+		return {**record, "emergency": fs.emergency_triage(doc)}
 	return {**record, "therapy": fs.therapy_progress(doc),
 	        "plan": [{"therapy_type": d.therapy_type, "sessions": d.no_of_sessions} for d in doc.therapy_plan_details]}
 
@@ -158,6 +159,95 @@ def _stable(value):
 
 def context_hash(context):
 	return hashlib.sha256(json.dumps(_stable(context), sort_keys=True, default=str).encode()).hexdigest()
+
+
+# What a cloud model must not receive. Clinical facts, dates and sex stay; age is coarsened to whole years.
+# Identifying fields (and staff names, which help re-identify a patient in a small facility) are dropped.
+IDENTIFYING_KEYS = {"patient_name", "mobile", "phone", "email", "address", "policy", "policy_number",
+                    "practitioner", "practitioner_name"}
+PATIENT_PLACEHOLDER = "[patient]"
+MIN_NAME_PART = 3
+OLDEST_AGE = 90
+# A "word" includes combining marks, so Bengali / Devanagari names ending in a vowel sign match as whole words
+# (Python's \w alone does not count them).
+WORD_CHARS = r"\w\u0300-\u036f\u0900-\u0dff\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f"
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+PHONE = re.compile(r"(?<![\d-])\+?\d(?:[ -]?\d){9,13}(?![\d-])")  # 10-14 digits, spaces/dashes allowed
+DATE_LIKE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?")
+
+
+def patient_names(doc):
+	"""Text naming this record's patient: (full names and the record id, name parts). Uses the linked Patient and
+	the record's own patient_name, which can differ (an alias, or an unregistered emergency arrival)."""
+	patient = doc.name if doc.doctype == "Patient" else doc.get("patient")
+	row = frappe.db.get_value("Patient", patient, ["patient_name", "first_name", "middle_name", "last_name"],
+	                          as_dict=True) if patient else None
+	full = {patient, doc.get("patient_name"), (row or {}).get("patient_name")}
+	parts = {(row or {}).get(f) for f in ("first_name", "middle_name", "last_name")}
+	for name in (doc.get("patient_name"), (row or {}).get("patient_name")):
+		parts |= set((name or "").split())
+	full = {n for n in full if n}
+	return full, {p for p in parts if p and len(p) >= MIN_NAME_PART} - full
+
+
+def _word_pattern(words, flags=0):
+	if not words:
+		return None
+	alternatives = "|".join(map(re.escape, sorted(words, key=len, reverse=True)))
+	return re.compile(rf"(?<![{WORD_CHARS}])(?:{alternatives})(?![{WORD_CHARS}])", flags)
+
+
+def _years(age):
+	"""'34 Year(s) 2 Month(s) 11 Day(s)' -> '34 years' (an exact age plus today gives the date of birth)."""
+	numbers = [int(n) for n in re.findall(r"\d+", str(age))]
+	if not numbers:
+		return None
+	if numbers[0] >= OLDEST_AGE:
+		return f"{OLDEST_AGE}+ years"
+	if numbers[0] == 0 and len(numbers) > 1 and "month" in str(age).lower():
+		return f"{numbers[1]} months"
+	return f"{numbers[0]} years"
+
+
+def pseudonymise(context, full_names=(), name_parts=()):
+	"""A copy of the context for a model outside this server. Identifying fields are dropped; the patient's name
+	and record id (whole, any case) and name parts (as written, so "Will" does not hit "will") become [patient];
+	phone numbers and e-mail addresses in any text become [phone] / [email]; age is whole years. Other people
+	named in free-text notes are NOT detected: this is pseudonymisation, not anonymisation."""
+	full = _word_pattern(full_names, re.IGNORECASE)
+	parts = _word_pattern(name_parts)
+
+	def clean_text(text):
+		if DATE_LIKE.fullmatch(text):
+			return text
+		for pattern in (full, parts):
+			if pattern:
+				text = pattern.sub(PATIENT_PLACEHOLDER, text)
+		return PHONE.sub("[phone]", EMAIL.sub("[email]", text))
+
+	def clean(value, key=None):
+		if isinstance(value, list):
+			return [clean(item) for item in value]
+		if isinstance(value, dict):
+			return {k: clean(v, k) for k, v in value.items() if k not in IDENTIFYING_KEYS}
+		if key == "age" and value:
+			return _years(value)
+		if isinstance(value, str):
+			return clean_text(value)
+		return value
+
+	return clean(context)
+
+
+def restore_placeholder(value, replacement):
+	"""Put a readable phrase back where a cloud model echoed the placeholder (the stored summary is shown as is)."""
+	if isinstance(value, list):
+		return [restore_placeholder(item, replacement) for item in value]
+	if isinstance(value, dict):
+		return {k: restore_placeholder(v, replacement) for k, v in value.items()}
+	if isinstance(value, str):
+		return value.replace(PATIENT_PLACEHOLDER, replacement)
+	return value
 
 
 def serialise(context, max_chars):

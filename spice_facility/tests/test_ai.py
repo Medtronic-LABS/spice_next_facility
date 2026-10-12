@@ -413,3 +413,141 @@ class TestProviderRetries(IntegrationTestCase):
 		result, request, sleep = self.request([MagicMock(status_code=400, text="bad", headers={})])
 		self.assertEqual(request.call_count, 1)
 		sleep.assert_not_called()
+
+
+class TestCloudSummaries(AITestCase):
+	"""A cloud model may write summaries only when the site opts in, and never sees direct identifiers."""
+
+	def settings(self, **values):
+		doc = frappe.get_doc("SPICE AI Settings")
+		doc.update({"summary_enabled": 1, "summary_provider": "Claude", "claude_enabled": 1,
+		            "anthropic_api_key": "key", "claude_model": "claude-test", "cloud_patient_data_allowed": 0, **values})
+		return doc
+
+	def test_a_cloud_summary_provider_needs_the_sites_consent(self):
+		agreed = {"cloud_patient_data_allowed": 1, "cloud_patient_data_agreement": "Anthropic DPA 2026-10"}
+		with self.assertRaisesRegex(frappe.ValidationError, "Allow cloud models"):
+			self.settings().validate()
+		with self.assertRaisesRegex(frappe.ValidationError, "data-processing agreement"):
+			self.settings(cloud_patient_data_allowed=1).validate()
+		self.settings(**agreed).validate()
+		with self.assertRaisesRegex(frappe.ValidationError, "enable Claude"):
+			self.settings(**agreed, claude_enabled=0).validate()
+
+	def test_summaries_run_on_a_consented_cloud_provider_without_a_local_model(self):
+		from spice_facility.ai.config import get_config
+		from spice_facility.ai.providers.registry import NoSummaryProvider, summary_provider
+
+		for field, value in {"summary_enabled": 1, "summary_provider": "Claude", "claude_enabled": 1,
+		                     "claude_model": "claude-test", "cloud_patient_data_allowed": 1}.items():
+			frappe.db.set_single_value("SPICE AI Settings", field, value)
+		frappe.conf.spice_ai_ollama_enabled = 0
+		frappe.clear_document_cache("SPICE AI Settings", "SPICE AI Settings")
+		try:
+			self.assertTrue(get_config().summary_enabled)
+			self.assertEqual(summary_provider().name, "Claude")
+			frappe.db.set_single_value("SPICE AI Settings", "cloud_patient_data_allowed", 0)
+			frappe.clear_document_cache("SPICE AI Settings", "SPICE AI Settings")
+			self.assertFalse(get_config().summary_enabled)
+			with self.assertRaises(NoSummaryProvider):
+				summary_provider()
+		finally:
+			frappe.conf.pop("spice_ai_ollama_enabled", None)
+			frappe.db.rollback()
+			frappe.clear_document_cache("SPICE AI Settings", "SPICE AI Settings")
+
+	def test_a_cloud_model_never_receives_direct_identifiers(self):
+		from spice_facility.api import ai_summary
+
+		patient = frappe.get_doc("Patient", any_patient())
+		patient.db_set({"mobile": "9000000001"})
+		for is_local, should_see_name in ((False, False), (True, True)):
+			model = FakeProvider("Claude" if not is_local else "Ollama", is_local, json_answers=[
+				{"headline": "h", "summary": "s", "alerts": [], "follow_up": []}])
+			row = frappe.get_doc({"doctype": "SPICE AI Summary", "reference_doctype": "Patient",
+			                      "reference_name": patient.name, "status": "Queued",
+			                      "requested_by": "Administrator"}).insert(ignore_permissions=True)
+			with patch("spice_facility.api.ai_summary.summary_provider", return_value=model), \
+			     patch("spice_facility.api.ai_summary._notify"):
+				ai_summary.run(row.name)
+			sent = " ".join(model.sent)
+			self.assertEqual(frappe.db.get_value("SPICE AI Summary", row.name, "status"), "Ready", sent[:200])
+			self.assertEqual(patient.patient_name in sent or patient.name in sent, should_see_name)
+			self.assertEqual("[patient]" in sent, not should_see_name)
+			self.assertEqual("9000000001" in sent, should_see_name)
+			self.assertEqual(frappe.db.get_value("SPICE AI Summary", row.name, "provider"), model.name)
+		frappe.db.rollback()
+
+	def test_a_patient_who_opted_out_is_never_sent_to_a_cloud_model(self):
+		from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD
+		from spice_facility.ai.providers.registry import NoSummaryProvider
+		from spice_facility.api.ai_summary import provider_for
+
+		patient = frappe.get_doc("Patient", any_patient())
+		cloud, local = FakeProvider("Claude", False), FakeProvider("Ollama", True)
+		patient.db_set(CLOUD_OPT_OUT_FIELD, 1)
+		try:
+			with patch("spice_facility.api.ai_summary.summary_provider", return_value=cloud):
+				with self.assertRaises(NoSummaryProvider):
+					provider_for(patient)
+			with patch("spice_facility.api.ai_summary.summary_provider", return_value=local):
+				self.assertIs(provider_for(patient), local)
+		finally:
+			frappe.db.rollback()
+
+	def test_ask_data_keeps_its_local_model_when_summaries_use_a_cloud_one(self):
+		from spice_facility.ai.config import get_config
+		from spice_facility.ai.providers.registry import local_provider
+
+		frappe.db.set_single_value("SPICE AI Settings", {"ollama_enabled": 1, "summary_provider": "Claude",
+		                                                 "claude_enabled": 1, "cloud_patient_data_allowed": 1})
+		frappe.conf.spice_ai_ollama_enabled = 1
+		frappe.clear_document_cache("SPICE AI Settings", "SPICE AI Settings")
+		try:
+			self.assertEqual(get_config().summary_provider, "Claude")
+			self.assertEqual(local_provider().name, "Ollama")
+		finally:
+			frappe.conf.pop("spice_ai_ollama_enabled", None)
+			frappe.db.rollback()
+			frappe.clear_document_cache("SPICE AI Settings", "SPICE AI Settings")
+
+
+class TestPseudonymise(IntegrationTestCase):
+	"""What a cloud model receives in place of a record's context."""
+
+	def run_on(self, context, full=(), parts=()):
+		from spice_facility.ai.summary_context import pseudonymise
+
+		return pseudonymise(context, full, parts)
+
+	def test_indic_names_and_name_parts_are_replaced_as_whole_words(self):
+		out = self.run_on({"note": "রহিমা ভালো আছে; সীতারাম এসেছিলেন", "record": "Patient:सीता देवी",
+		                   "comment": "सीता ठीक है"}, full={"सीता देवी", "রহিমা খাতুন"}, parts={"রহিমা", "सीता"})
+		self.assertEqual(out["note"], "[patient] ভালো আছে; সীতারাম এসেছিলেন")
+		self.assertEqual(out["record"], "Patient:[patient]")
+		self.assertEqual(out["comment"], "[patient] ठीक है")
+
+	def test_name_parts_match_as_written_but_full_names_in_any_case(self):
+		out = self.run_on({"a": "Pain will improve; Will Rose reviewed", "b": "WILL ROSE seen"},
+		                  full={"Will Rose"}, parts={"Will", "Rose"})
+		self.assertEqual(out, {"a": "Pain will improve; [patient] reviewed", "b": "[patient] seen"})
+
+	def test_contacts_staff_and_exact_age_do_not_leave(self):
+		out = self.run_on({"patient": {"patient_name": "X", "mobile": "9876500001", "age": "34 Year(s) 2 Month(s) 11 Day(s)",
+		                               "policy": {"policy_number": "P1"}, "last_visit": {"practitioner_name": "Dr A"}},
+		                   "encounter": {"practitioner": "Dr A", "date": "2026-10-09",
+		                                 "note": "Son Karim, call 01711-123456 or karim@example.com. HbA1c 8.2"}})
+		self.assertEqual(out["patient"], {"age": "34 years", "last_visit": {}})
+		self.assertEqual(out["encounter"], {"date": "2026-10-09",
+		                                    "note": "Son Karim, call [phone] or [email]. HbA1c 8.2"})
+		self.assertEqual(self.run_on({"age": "93 Year(s)"})["age"], "90+ years")
+		self.assertEqual(self.run_on({"age": "0 Year(s) 7 Month(s) 3 Day(s)"})["age"], "7 months")
+
+	def test_an_unregistered_emergency_arrival_is_still_named_and_removed(self):
+		from spice_facility.ai.summary_context import patient_names
+
+		record = frappe._dict(doctype="Emergency Record", name="ER-0001", patient=None, patient_name="Abdul Malek")
+		full, parts = patient_names(record)
+		self.assertIn("Abdul Malek", full)
+		out = self.run_on({"emergency": {"chief_complaint": "Abdul Malek, RTA, unconscious"}}, full, parts)
+		self.assertEqual(out["emergency"]["chief_complaint"], "[patient], RTA, unconscious")

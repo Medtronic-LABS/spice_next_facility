@@ -22,7 +22,7 @@ spice_facility.ai.strings = {
 		title: __("AI summary"),
 		generate: __("Generate summary"),
 		refresh: __("Refresh"),
-		generating: __("Generating with the local model — this can take up to a minute…"),
+		generating: __("Generating the summary — this can take up to a minute…"),
 		queued: __("Queued…"),
 		none: __("No AI summary yet for this record."),
 		stale: __("Out of date — the record changed since this summary"),

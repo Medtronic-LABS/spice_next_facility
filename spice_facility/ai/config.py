@@ -14,6 +14,10 @@ OLLAMA, CLAUDE, OPENAI, GEMINI = "Ollama", "Claude", "OpenAI", "Gemini"
 PROVIDER_NAMES = (OLLAMA, CLAUDE, OPENAI, GEMINI)
 LOCAL_PROVIDERS = (OLLAMA,)
 MODEL_DEFAULT = "Model default"  # a Select option meaning "send nothing, let the model decide"
+# Patient check box: keep this patient's records away from cloud models (created by setup.install)
+CLOUD_OPT_OUT_FIELD = "spice_no_cloud_ai"
+# Settings fields of each provider start with this prefix (e.g. claude_enabled)
+PROVIDER_FIELD_PREFIX = {OLLAMA: "ollama", CLAUDE: "claude", OPENAI: "openai", GEMINI: "gemini"}
 # The settings field holding each cloud provider's API key
 KEY_FIELDS = {CLAUDE: "anthropic_api_key", OPENAI: "openai_api_key", GEMINI: "gemini_api_key"}
 
@@ -49,6 +53,7 @@ class AIConfig:
 	chat_enabled: bool
 	floating_chat_enabled: bool
 	summary_provider: str
+	cloud_patient_data: bool  # cloud models may read patient records (summaries); off unless a site opts in
 	chat_default_provider: str
 	allowed_roles: tuple
 	max_rows: int
@@ -123,10 +128,13 @@ def get_config() -> AIConfig:
 			thinking=None if (s.gemini_thinking or MODEL_DEFAULT) == MODEL_DEFAULT else s.gemini_thinking,
 		),
 	}
-	local_enabled = any(p.enabled and p.is_local for p in providers.values())
+	cloud_patient_data = bool(s.cloud_patient_data_allowed)
+	summarizer = providers.get(s.summary_provider or OLLAMA)
+	summaries_possible = bool(summarizer and summarizer.enabled and (summarizer.is_local or cloud_patient_data))
 	return AIConfig(
-		# Summaries read patient records, so they exist only while a local model is available.
-		providers=providers, summary_enabled=bool(s.summary_enabled) and local_enabled, chat_enabled=bool(s.chat_enabled),
+		# Summaries read patient records: they need their provider, and a cloud one needs the site's consent.
+		providers=providers, summary_enabled=bool(s.summary_enabled) and summaries_possible,
+		chat_enabled=bool(s.chat_enabled), cloud_patient_data=cloud_patient_data,
 		floating_chat_enabled=bool(s.floating_chat_enabled), summary_provider=s.summary_provider or OLLAMA,
 		chat_default_provider=s.chat_default_provider or OLLAMA,
 		allowed_roles=tuple(r.role for r in s.allowed_roles or []),
