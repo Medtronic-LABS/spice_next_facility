@@ -13,6 +13,7 @@ SETTINGS = "SPICE AI Settings"
 OLLAMA, CLAUDE, OPENAI, GEMINI = "Ollama", "Claude", "OpenAI", "Gemini"
 PROVIDER_NAMES = (OLLAMA, CLAUDE, OPENAI, GEMINI)
 LOCAL_PROVIDERS = (OLLAMA,)
+MODEL_DEFAULT = "Model default"  # a Select option meaning "send nothing, let the model decide"
 # The settings field holding each cloud provider's API key
 KEY_FIELDS = {CLAUDE: "anthropic_api_key", OPENAI: "openai_api_key", GEMINI: "gemini_api_key"}
 
@@ -38,6 +39,7 @@ class ProviderConfig:
 	api_key: str | None = field(default=None, repr=False)
 	keep_alive: str | None = None
 	temperature: float = 0.1
+	thinking: str | None = None  # Gemini thinking level ("Low", ...); None = the model's default
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,7 @@ def get_config() -> AIConfig:
 			name=GEMINI, enabled=bool(s.gemini_enabled), model=s.gemini_model,
 			base_url=(s.gemini_base_url or "").rstrip("/") or None, timeout=s.gemini_timeout or 60,
 			in_chat=bool(s.gemini_in_chat), is_local=False, api_key=_secret(s, "gemini_api_key"),
+			thinking=None if (s.gemini_thinking or MODEL_DEFAULT) == MODEL_DEFAULT else s.gemini_thinking,
 		),
 	}
 	local_enabled = any(p.enabled and p.is_local for p in providers.values())

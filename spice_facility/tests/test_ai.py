@@ -2,15 +2,17 @@
 
 import json
 import os
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import frappe
+import requests
 from frappe.tests import IntegrationTestCase
 
 from spice_facility.ai import data_catalog, query
 from spice_facility.ai.clinical_flags import lab_flags, parse_range
 from spice_facility.ai.config import GEMINI, ProviderConfig, ensure_ai_access
-from spice_facility.ai.providers.base import AIProviderError
+from spice_facility.ai.providers.base import MAX_RETRY_AFTER, RETRY_DELAYS, AIProviderError
 from spice_facility.ai.providers.gemini import EMPTY_ENUM, THINKING_ALLOWANCE, GeminiProvider
 from spice_facility.ai.summary_context import build_context, context_hash
 from spice_facility.ai.talk_to_data import (
@@ -364,3 +366,50 @@ class TestGeminiProvider(IntegrationTestCase):
 				self.provider.complete_text("s", [{"role": "user", "content": "q"}])
 		self.assertIn("HTTP 400", str(raised.exception))
 		self.assertNotIn("secret-key", str(raised.exception))
+
+	def test_thinking_level_is_sent_only_when_chosen(self):
+		body = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+		_, call = self.call(body, "complete_text", "s", [{"role": "user", "content": "q"}])
+		self.assertNotIn("thinkingConfig", call.kwargs["json"]["generationConfig"])
+		self.provider = GeminiProvider(replace(self.provider.config, thinking="Low"))
+		_, call = self.call(body, "complete_text", "s", [{"role": "user", "content": "q"}])
+		self.assertEqual(call.kwargs["json"]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "low"})
+
+
+class TestProviderRetries(IntegrationTestCase):
+	"""Busy providers are retried briefly; timeouts and client errors are not."""
+
+	def setUp(self):
+		self.provider = GeminiProvider(ProviderConfig(
+			name=GEMINI, enabled=True, model="m", base_url="https://gemini.example/v1beta", timeout=5,
+			in_chat=True, is_local=False, api_key="k"))
+
+	def request(self, side_effect):
+		with patch("spice_facility.ai.providers.base.requests.request", side_effect=side_effect) as request, \
+		     patch("spice_facility.ai.providers.base.time.sleep") as sleep:
+			try:
+				return self.provider.list_models(), request, sleep
+			except AIProviderError as error:
+				return error, request, sleep
+
+	def test_a_busy_answer_is_retried(self):
+		busy = MagicMock(status_code=503, text="high demand", headers={"Retry-After": "30"})
+		result, request, sleep = self.request([busy, _response({"models": []})])
+		self.assertEqual(result, [])
+		self.assertEqual(request.call_count, 2)
+		sleep.assert_called_once_with(MAX_RETRY_AFTER)
+
+	def test_retries_stop_after_the_last_attempt(self):
+		busy = MagicMock(status_code=503, text="high demand", headers={})
+		result, request, _ = self.request([busy] * 5)
+		self.assertIsInstance(result, AIProviderError)
+		self.assertIn("HTTP 503", str(result))
+		self.assertEqual(request.call_count, len(RETRY_DELAYS) + 1)
+
+	def test_a_timeout_or_client_error_is_not_retried(self):
+		result, request, sleep = self.request(requests.Timeout())
+		self.assertIn("did not answer within 15 s", str(result))  # list_models waits 15 s
+		self.assertEqual(request.call_count, 1)
+		result, request, sleep = self.request([MagicMock(status_code=400, text="bad", headers={})])
+		self.assertEqual(request.call_count, 1)
+		sleep.assert_not_called()
