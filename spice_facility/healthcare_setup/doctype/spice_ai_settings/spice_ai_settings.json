@@ -256,7 +256,7 @@
    "fieldtype": "Section Break",
    "label": "Gemini (Google)",
    "collapsible": 1,
-   "description": "Cloud. Receives only the question and table/field names \u2014 never patient data."
+   "description": "Cloud. Receives only what the user types and table/field names \u2014 never records or results. Use a billing-enabled (paid) Google project: on the free tier Google may use prompts to improve its products."
   },
   {
    "fieldname": "gemini_enabled",

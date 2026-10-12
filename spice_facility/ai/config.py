@@ -13,6 +13,8 @@ SETTINGS = "SPICE AI Settings"
 OLLAMA, CLAUDE, OPENAI, GEMINI = "Ollama", "Claude", "OpenAI", "Gemini"
 PROVIDER_NAMES = (OLLAMA, CLAUDE, OPENAI, GEMINI)
 LOCAL_PROVIDERS = (OLLAMA,)
+# The settings field holding each cloud provider's API key
+KEY_FIELDS = {CLAUDE: "anthropic_api_key", OPENAI: "openai_api_key", GEMINI: "gemini_api_key"}
 
 # site_config / env keys that override stored values
 OVERRIDES = {

@@ -51,6 +51,8 @@ class LLMProvider(ABC):
 			                            timeout=timeout or self.config.timeout)
 		except (requests.ConnectionError, requests.Timeout) as error:
 			raise AIProviderUnavailable(f"{self.name} is not reachable at {url.split('?')[0]}") from error
+		except requests.RequestException as error:  # e.g. a missing or malformed API base URL
+			raise AIProviderUnavailable(f"{self.name} cannot be called at {url.split('?')[0]}") from error
 		if response.status_code >= 400:
 			raise AIProviderError(f"{self.name} returned HTTP {response.status_code}: {_short(response.text)}")
 		try:

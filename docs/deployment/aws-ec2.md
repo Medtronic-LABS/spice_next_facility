@@ -140,7 +140,7 @@ Each may deploy only from its own branch (deployment branch policy: `dev` ← `d
 | `ALERT_WEBHOOK_URL` | optional Slack/Teams webhook for backup failures |
 | `SPICE_AI_ANTHROPIC_API_KEY` | optional Claude key for Ask Data |
 | `SPICE_AI_OPENAI_API_KEY` | optional OpenAI key for Ask Data |
-| `SPICE_AI_GEMINI_API_KEY` | optional Google Gemini key for Ask Data |
+| `SPICE_AI_GEMINI_API_KEY` | optional Google Gemini key for Ask Data — from a **billing-enabled (paid)** project: on the free tier Google may use prompts to improve its products |
 | `GHCR_PULL_USER`, `GHCR_PULL_TOKEN` | if the GHCR package is private: a user and a PAT with `read:packages` |
 
 Both passwords must be 12+ characters from `A-Z a-z 0-9 . _ ~ + = @ % , : / -` (the deploy job checks this

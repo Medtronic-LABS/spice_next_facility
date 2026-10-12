@@ -16,6 +16,7 @@ spice_facility.ai.strings = {
 		models_loaded: (n) => __("{0} models loaded", [n]),
 		key_saved: __("API key: saved (hidden)"),
 		key_missing: __("API key: not set"),
+		key_deployment: __("API key: supplied by the deployment (hidden)"),
 	},
 	summary: {
 		title: __("AI summary"),

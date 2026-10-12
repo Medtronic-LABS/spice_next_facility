@@ -37,8 +37,8 @@ async function spice_ai_test(frm, provider, fill_models = false) {
 function spice_ai_render_status(frm, provider, result) {
 	const S = spice_facility.ai.strings.settings;
 	const esc = frappe.utils.escape_html;
-	const key_line = provider.key
-		? `<div class="text-muted small">${esc(frm.doc[provider.key] ? S.key_saved : S.key_missing)}</div>` : "";
+	const key_state = result?.key_from_deployment ? S.key_deployment : frm.doc[provider.key] ? S.key_saved : S.key_missing;
+	const key_line = provider.key ? `<div class="text-muted small">${esc(key_state)}</div>` : "";
 	let body = "";
 	if (result?.pending) body = `<div class="text-muted">${esc(S.testing)}</div>`;
 	else if (result && result.ok) {

@@ -5,7 +5,7 @@ import time
 import frappe
 from frappe import _
 
-from spice_facility.ai.config import PROVIDER_NAMES, get_config
+from spice_facility.ai.config import KEY_FIELDS, PROVIDER_NAMES, get_config, has_override
 from spice_facility.ai.providers.base import AIProviderError
 from spice_facility.ai.providers.registry import build
 
@@ -22,6 +22,8 @@ def test_provider(name: str) -> dict:
 	provider = _provider(name)
 	if not provider.is_local and not provider.config.api_key:
 		return {"ok": False, "message": _("No API key saved for {0}.").format(name)}
+	# Where the key comes from, never its value: a deployment-supplied key is not stored in the form.
+	key_from_deployment = name in KEY_FIELDS and has_override(KEY_FIELDS[name])
 	started = time.monotonic()
 	try:
 		models = provider.list_models()
@@ -31,4 +33,5 @@ def test_provider(name: str) -> dict:
 	return {
 		"ok": True, "latency_ms": round((time.monotonic() - started) * 1000), "models": models[:200],
 		"model_available": bool(configured and configured in models), "model": configured,
+		"key_from_deployment": key_from_deployment,
 	}

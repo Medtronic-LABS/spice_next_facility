@@ -54,6 +54,8 @@ fields twice, so custom-field validation is skipped for it only while that defec
   the settings form, so it need not also be stored).
   Each provider has **Test** / **Refresh models** buttons. Access is limited to **Allowed roles**.
 - **Data policy:** cloud models receive only the question, dataset/field names and earlier query plans.
+  Use a billing-enabled (paid) Google project for Gemini: free-tier prompts may be used to improve Google's
+  products.
   Records, results and page context go only to the local model, which writes every answer and summary.
 - **AI summary:** abnormal labs/vitals are flagged in code (`clinical_flags.py`) from each record's own
   normal ranges; a `must_mention` checklist keeps the small model on the important facts. Summaries are

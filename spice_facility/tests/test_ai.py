@@ -11,7 +11,7 @@ from spice_facility.ai import data_catalog, query
 from spice_facility.ai.clinical_flags import lab_flags, parse_range
 from spice_facility.ai.config import GEMINI, ProviderConfig, ensure_ai_access
 from spice_facility.ai.providers.base import AIProviderError
-from spice_facility.ai.providers.gemini import GeminiProvider
+from spice_facility.ai.providers.gemini import EMPTY_ENUM, THINKING_ALLOWANCE, GeminiProvider
 from spice_facility.ai.summary_context import build_context, context_hash
 from spice_facility.ai.talk_to_data import (
 	answer_data,
@@ -224,10 +224,33 @@ class TestSettingsAndAccess(IntegrationTestCase):
 	def test_a_key_supplied_by_the_deployment_satisfies_the_form(self):
 		settings = frappe.get_doc("SPICE AI Settings")
 		settings.gemini_enabled, settings.gemini_api_key, settings.gemini_model = 1, None, "gemini-test"
-		with self.assertRaises(frappe.ValidationError):
-			settings.validate()
-		with patch.dict(os.environ, {"SPICE_AI_GEMINI_API_KEY": "from-env"}):
-			settings.validate()
+		settings.gemini_base_url = "https://generativelanguage.googleapis.com/v1beta"
+		environ = {k: v for k, v in os.environ.items() if k != "SPICE_AI_GEMINI_API_KEY"}
+		with patch.dict(frappe.conf, {"spice_ai_gemini_api_key": None}), patch.dict(os.environ, environ, clear=True):
+			with self.assertRaisesRegex(frappe.ValidationError, "no API key"):
+				settings.validate()
+			with patch.dict(os.environ, {"SPICE_AI_GEMINI_API_KEY": "from-env"}):
+				settings.validate()
+
+	def test_the_gemini_key_only_goes_to_google(self):
+		settings = frappe.get_doc("SPICE AI Settings")
+		settings.gemini_enabled, settings.gemini_api_key, settings.gemini_model = 1, "key", "gemini-test"
+		for url in ("https://attacker.example/v1beta", "http://generativelanguage.googleapis.com/v1beta",
+		            "https://googleapis.com.attacker.example", ""):
+			settings.gemini_base_url = url
+			with self.assertRaisesRegex(frappe.ValidationError, "base URL", msg=url):
+				settings.validate()
+
+	def test_new_settings_fields_get_their_defaults_without_overriding_a_choice(self):
+		from spice_facility.setup.install import fill_ai_settings_defaults
+
+		frappe.db.delete("Singles", {"doctype": "SPICE AI Settings", "field": ("in", ["gemini_base_url", "gemini_in_chat"])})
+		frappe.db.set_single_value("SPICE AI Settings", "gemini_timeout", 17)
+		fill_ai_settings_defaults()
+		self.assertEqual(frappe.db.get_single_value("SPICE AI Settings", "gemini_base_url"),
+		                 "https://generativelanguage.googleapis.com/v1beta")
+		self.assertEqual(frappe.db.get_single_value("SPICE AI Settings", "gemini_in_chat"), 1)
+		self.assertEqual(frappe.db.get_single_value("SPICE AI Settings", "gemini_timeout"), 17)
 
 	def test_users_without_an_allowed_role_are_refused(self):
 		frappe.set_user("Guest")
@@ -299,7 +322,7 @@ class TestGeminiProvider(IntegrationTestCase):
 			[{"role": "user", "content": "q"}], 100)
 		self.assertEqual(text, "Answer.")
 		self.assertNotIn("responseJsonSchema", call.kwargs["json"]["generationConfig"])
-		self.assertEqual(call.kwargs["json"]["generationConfig"]["maxOutputTokens"], 100)
+		self.assertEqual(call.kwargs["json"]["generationConfig"]["maxOutputTokens"], 100 + THINKING_ALLOWANCE)
 
 	def test_a_blocked_prompt_is_a_provider_error(self):
 		with self.assertRaisesRegex(AIProviderError, "SAFETY"):
@@ -317,3 +340,26 @@ class TestGeminiProvider(IntegrationTestCase):
 			models = self.provider.list_models()
 		self.assertEqual(models, ["gemini-a", "gemini-b"])
 		self.assertIn("pageToken=next", request.call_args_list[1].args[1])
+
+	def test_empty_enum_values_travel_as_a_placeholder(self):
+		schema = {"type": "object", "properties": {"group_by": {"type": "string", "enum": ["", "department"]}}}
+		answer, call = self.call({"candidates": [{"content": {"parts": [{"text": json.dumps({"group_by": EMPTY_ENUM})}]}}]},
+		                         "complete_json", "s", [{"role": "user", "content": "q"}], schema)
+		self.assertEqual(answer, {"group_by": ""})
+		sent = call.kwargs["json"]["generationConfig"]["responseJsonSchema"]
+		self.assertEqual(sent["properties"]["group_by"]["enum"], [EMPTY_ENUM, "department"])
+		self.assertEqual(schema["properties"]["group_by"]["enum"], ["", "department"], "caller's schema untouched")
+
+	def test_an_unfinished_answer_reports_why(self):
+		for body in ({"candidates": [{"finishReason": "MAX_TOKENS", "content": {"role": "model"}}]},
+		             {"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": '{"mo'}]}}]}):
+			with self.assertRaisesRegex(AIProviderError, "MAX_TOKENS"):
+				self.call(body, "complete_json", "s", [{"role": "user", "content": "q"}], {"type": "object"})
+
+	def test_an_http_error_never_contains_the_key(self):
+		response = MagicMock(status_code=400, text='{"error": {"message": "API key not valid."}}')
+		with patch("spice_facility.ai.providers.base.requests.request", return_value=response):
+			with self.assertRaises(AIProviderError) as raised:
+				self.provider.complete_text("s", [{"role": "user", "content": "q"}])
+		self.assertIn("HTTP 400", str(raised.exception))
+		self.assertNotIn("secret-key", str(raised.exception))
