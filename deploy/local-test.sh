@@ -30,7 +30,7 @@ write_env() {
 IMAGE_TAG=local
 GHCR_OWNER=medtronic-labs
 SITE_NAME=spice-facility-local.localhost
-DOMAIN=:80
+DOMAIN=
 ADMIN_PASSWORD=admin
 DB_ROOT_PASSWORD=local-root
 DB_BUFFER_POOL=512M
@@ -55,8 +55,10 @@ build_base() {
 	. "${APP_DIR}/docker/base/versions.env"
 	set +a
 	docker build -f "${APP_DIR}/docker/base/Dockerfile" \
-		--build-arg BENCH_IMAGE --build-arg FRAPPE_REF --build-arg ERPNEXT_REF \
-		--build-arg HEALTHCARE_REF --build-arg FRAPPE_THEME_REF \
+		--build-arg BENCH_IMAGE \
+		--build-arg FRAPPE_REF --build-arg FRAPPE_COMMIT --build-arg ERPNEXT_REF --build-arg ERPNEXT_COMMIT \
+		--build-arg HEALTHCARE_REF --build-arg HEALTHCARE_COMMIT \
+		--build-arg FRAPPE_THEME_REF --build-arg FRAPPE_THEME_COMMIT \
 		-t "${BASE_IMAGE}" "${APP_DIR}/docker/base"
 }
 
@@ -66,7 +68,9 @@ build_app() {
 	BUILD_CTX="$(mktemp -d)"
 	trap 'rm -rf "${BUILD_CTX}"' EXIT
 	mkdir -p "${BUILD_CTX}/apps/spice_facility"
+	# Tracked files deleted in the working tree are still listed by ls-files: skip what no longer exists.
 	git -C "${APP_DIR}" ls-files -z --cached --others --exclude-standard \
+		| while IFS= read -r -d '' f; do if [ -e "${APP_DIR}/${f}" ]; then printf '%s\0' "${f}"; fi; done \
 		| rsync -a --from0 --files-from=- "${APP_DIR}/" "${BUILD_CTX}/apps/spice_facility/"
 	echo "[local] building the app image"
 	docker build -f "${BUILD_CTX}/apps/spice_facility/docker/allinone/Dockerfile" \

@@ -2,19 +2,26 @@
 #
 # Two images (docker/):
 #   base  ghcr.io/medtronic-labs/spice_next_facility-base:<key>  bench + Frappe + ERPNext + Frappe Health +
-#         frappe_theme at the tags pinned in docker/base/versions.env. <key> hashes versions.env and the base
-#         Dockerfile, so it is rebuilt only when one of them changes; otherwise the job is a no-op.
+#         frappe_theme at the commits pinned in docker/base/versions.env. <key> hashes versions.env and the base
+#         Dockerfile, so it is rebuilt only when one of them changes.
 #   app   ghcr.io/medtronic-labs/spice_next_facility:<tags>       spice_facility on top of the base: a push that
 #         changes only this app builds a few small layers, and EC2 pulls megabytes.
 #
-#   pull_request     -> checks, ensure base, build + test app            (nothing published or deployed)
+# Trust: only pushes to develop/training/main build and publish the base, with a signed build-provenance
+# attestation. Every run reuses a published base only if that attestation proves it was built by this workflow
+# from one of those branches; otherwise (a PR or tag changing docker/base/, a missing or unproven image) the
+# app job builds the base locally and nothing is published from it. The app image is built once, tested, and
+# that same image is pushed (only from develop/training/main and v* tags) with its own attestation; the deploy
+# verifies that attestation and runs the image by digest, never by a tag someone could have moved.
+#
+#   pull_request     -> checks, base, build + test app                 (nothing published or deployed)
 #   push develop     -> ... + publish sha-<commit>, develop  + deploy to environment "dev"
 #   push training    -> ... + publish sha-<commit>, training + deploy to environment "training"
 #   push main / v*   -> ... + publish sha-<commit>, main/latest / version (no deploy)
 #   manual run       -> same as a push of the chosen branch; `rebuild_base` forces a base rebuild
 #
 # Each GitHub environment ("dev", "training") holds its own variables (SITE_NAME, DOMAIN, SITE_URL) and
-# secrets (one EC2 host each). See docs/deployment/aws-ec2.md.
+# secrets (one EC2 host each), and may deploy only from its own branch. See docs/deployment/aws-ec2.md.
 name: Build, test, publish and deploy
 
 on:
@@ -32,7 +39,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -44,6 +50,7 @@ env:
   IMAGE_NAME: medtronic-labs/spice_next_facility
   BASE_IMAGE_NAME: medtronic-labs/spice_next_facility-base
   CI_IMAGE: spice_next_facility:ci
+  CI_BASE_IMAGE: spice_next_facility-base:ci
 
 jobs:
   checks:
@@ -51,6 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -63,23 +72,35 @@ jobs:
         run: find spice_facility -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
       - name: Shell scripts parse
         run: for f in docker/allinone/*.sh deploy/*.sh; do bash -n "$f"; done
-      - name: Compose file is valid
+      - name: Compose files are valid
         working-directory: deploy
         run: |
           cp .env.example .env
+          cp .env.example .env.local
           docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.local.yml config --quiet
 
   base:
     name: Ensure base image
     needs: checks
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     outputs:
-      image: ${{ steps.key.outputs.image }}
+      # reuse | build: `image` is the published base by digest.  local: the app job builds it itself.
+      mode: ${{ steps.result.outputs.mode }}
+      image: ${{ steps.result.outputs.image }}
+      # true for pushes/dispatches on develop/training/main and v* tag pushes: may publish the app image.
+      publish: ${{ steps.trust.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: docker/base
+          persist-credentials: false
 
       - name: Base image key (hash of the pins and the Dockerfile)
         id: key
@@ -88,6 +109,23 @@ jobs:
           echo "image=${REGISTRY}/${BASE_IMAGE_NAME}:${key}" >> "$GITHUB_OUTPUT"
           grep -E '^[A-Z_]+=' docker/base/versions.env >> "$GITHUB_ENV"
 
+      - name: May this run publish the base?
+        id: trust
+        env:
+          REF: ${{ github.ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          case "${EVENT}:${REF}" in
+            push:refs/heads/develop|push:refs/heads/training|push:refs/heads/main) trusted=true ;;
+            workflow_dispatch:refs/heads/develop|workflow_dispatch:refs/heads/training|workflow_dispatch:refs/heads/main) trusted=true ;;
+            *) trusted=false ;;
+          esac
+          publish="${trusted}"
+          case "${EVENT}:${REF}" in push:refs/tags/v*) publish=true ;; esac
+          echo "trusted=${trusted}" >> "$GITHUB_OUTPUT"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "May publish the base: ${trusted}; may publish the app image: ${publish}"
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -95,24 +133,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Is it already published?
+      - name: Is a proven base already published?
         id: exists
         env:
           IMAGE: ${{ steps.key.outputs.image }}
           FORCE: ${{ inputs.rebuild_base }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          verified=false
           if [ "${FORCE}" != "true" ] && docker manifest inspect "${IMAGE}" >/dev/null 2>&1; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "Reusing ${IMAGE}"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
+            digest=$(docker buildx imagetools inspect "${IMAGE}" --format '{{json .Manifest}}' | jq -r .digest)
+            reasons=""
+            for ref in refs/heads/develop refs/heads/training refs/heads/main; do
+              if out=$(gh attestation verify "oci://${IMAGE%:*}@${digest}" --repo "${GITHUB_REPOSITORY}" \
+                  --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/docker-publish.yml" \
+                  --source-ref "${ref}" --deny-self-hosted-runners 2>&1); then
+                verified=true
+                echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+                echo "Reusing ${IMAGE} (${digest}), attested from ${ref}"
+                break
+              fi
+              reasons="${reasons}${ref}: $(printf '%s' "${out}" | tail -n 1); "
+            done
+            [ "${verified}" = "true" ] || echo "::warning::Not reusing ${IMAGE}: no attestation from a protected branch verified (${reasons})"
           fi
+          echo "verified=${verified}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
-        if: steps.exists.outputs.found != 'true'
+        if: steps.exists.outputs.verified != 'true' && steps.trust.outputs.trusted == 'true'
 
       - name: Build and push base
-        if: steps.exists.outputs.found != 'true'
+        id: build
+        if: steps.exists.outputs.verified != 'true' && steps.trust.outputs.trusted == 'true'
         uses: docker/build-push-action@v6
         with:
           context: docker/base
@@ -120,43 +172,139 @@ jobs:
           build-args: |
             BENCH_IMAGE=${{ env.BENCH_IMAGE }}
             FRAPPE_REF=${{ env.FRAPPE_REF }}
+            FRAPPE_COMMIT=${{ env.FRAPPE_COMMIT }}
             ERPNEXT_REF=${{ env.ERPNEXT_REF }}
+            ERPNEXT_COMMIT=${{ env.ERPNEXT_COMMIT }}
             HEALTHCARE_REF=${{ env.HEALTHCARE_REF }}
+            HEALTHCARE_COMMIT=${{ env.HEALTHCARE_COMMIT }}
             FRAPPE_THEME_REF=${{ env.FRAPPE_THEME_REF }}
+            FRAPPE_THEME_COMMIT=${{ env.FRAPPE_THEME_COMMIT }}
           push: true
           tags: ${{ steps.key.outputs.image }}
           cache-from: type=gha,scope=base
           cache-to: type=gha,scope=base,mode=max
 
+      - name: Attest base provenance
+        if: steps.build.outcome == 'success'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+
+      - name: Result
+        id: result
+        env:
+          IMAGE: ${{ steps.key.outputs.image }}
+          REUSED_DIGEST: ${{ steps.exists.outputs.digest }}
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if [ -n "${REUSED_DIGEST}" ]; then
+            echo "mode=reuse" >> "$GITHUB_OUTPUT"; echo "image=${IMAGE%:*}@${REUSED_DIGEST}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${BUILT_DIGEST}" ]; then
+            echo "mode=build" >> "$GITHUB_OUTPUT"; echo "image=${IMAGE%:*}@${BUILT_DIGEST}" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=local" >> "$GITHUB_OUTPUT"; echo "image=" >> "$GITHUB_OUTPUT"
+            echo "No proven base to reuse and this run may not publish one: the app job builds it locally."
+          fi
+
   build-test-publish:
     name: Build, test, publish app image
     needs: base
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      # name@sha256:… of the pushed image (empty when nothing was published)
+      image: ${{ steps.push.outputs.image }}
     steps:
       - name: Checkout spice_facility
         uses: actions/checkout@v4
         with:
           path: apps/spice_facility
+          persist-credentials: false
 
       - name: Image tag for this commit
         id: tag
         run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Base image to build on
+        id: base
+        env:
+          MODE: ${{ needs.base.outputs.mode }}
+          IMAGE: ${{ needs.base.outputs.image }}
+        run: |
+          if [ "${MODE}" = "local" ]; then
+            echo "ref=${CI_BASE_IMAGE}" >> "$GITHUB_OUTPUT"
+            grep -E '^[A-Z_]+=' apps/spice_facility/docker/base/versions.env >> "$GITHUB_ENV"
+          else
+            echo "ref=${IMAGE}" >> "$GITHUB_OUTPUT"
+            docker pull --quiet "${IMAGE}"
+          fi
 
-      - name: Build app image (local, for tests)
+      # use: false keeps the engine's own builder as the default for the app build below.
+      - uses: docker/setup-buildx-action@v3
+        id: buildx
+        if: needs.base.outputs.mode == 'local'
+        with:
+          use: false
+
+      - name: Build base locally (unpublished)
+        if: needs.base.outputs.mode == 'local'
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: apps/spice_facility/docker/allinone/Dockerfile
-          build-args: BASE_IMAGE=${{ needs.base.outputs.image }}
+          builder: ${{ steps.buildx.outputs.name }}
+          context: apps/spice_facility/docker/base
+          file: apps/spice_facility/docker/base/Dockerfile
+          build-args: |
+            BENCH_IMAGE=${{ env.BENCH_IMAGE }}
+            FRAPPE_REF=${{ env.FRAPPE_REF }}
+            FRAPPE_COMMIT=${{ env.FRAPPE_COMMIT }}
+            ERPNEXT_REF=${{ env.ERPNEXT_REF }}
+            ERPNEXT_COMMIT=${{ env.ERPNEXT_COMMIT }}
+            HEALTHCARE_REF=${{ env.HEALTHCARE_REF }}
+            HEALTHCARE_COMMIT=${{ env.HEALTHCARE_COMMIT }}
+            FRAPPE_THEME_REF=${{ env.FRAPPE_THEME_REF }}
+            FRAPPE_THEME_COMMIT=${{ env.FRAPPE_THEME_COMMIT }}
           load: true
-          tags: ${{ env.CI_IMAGE }}
-          cache-from: type=gha,scope=app
-          cache-to: type=gha,scope=app,mode=max
+          tags: ${{ env.CI_BASE_IMAGE }}
+          cache-from: type=gha,scope=base
+
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.tag.outputs.tag }}
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+
+      # Plain `docker build` uses the engine's builder, which sees the base just pulled or loaded; the app layer
+      # is small enough that no cache is needed. This image is the one tested and the one pushed.
+      - name: Build app image
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+          LABELS: ${{ steps.meta.outputs.labels }}
+        run: |
+          set -eu
+          label_args=()
+          while IFS= read -r label; do
+            if [ -n "${label}" ]; then label_args+=(--label "${label}"); fi
+          done <<< "${LABELS}"
+          docker build \
+            -f apps/spice_facility/docker/allinone/Dockerfile \
+            --build-arg BASE_IMAGE="${BASE_REF}" \
+            "${label_args[@]}" -t "${CI_IMAGE}" .
+          if docker run --rm --entrypoint sh "${CI_IMAGE}" -c 'test -e /home/frappe/frappe-bench/apps/spice_facility/.git'; then
+            echo "::error::.git reached the image; check docker/allinone/Dockerfile.dockerignore"
+            exit 1
+          fi
 
       - name: Test inside the image (site setup + bench run-tests)
         run: |
@@ -182,132 +330,213 @@ jobs:
         run: docker logs mariadb || true
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: needs.base.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image tags
-        if: github.event_name != 'pull_request'
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ steps.tag.outputs.tag }}
-            type=ref,event=branch
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}}
+      - name: Push the tested image
+        id: push
+        if: needs.base.outputs.publish == 'true'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          SHA_TAG: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
+        run: |
+          set -eu
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            docker tag "${CI_IMAGE}" "${tag}"
+            docker push --quiet "${tag}"
+          done <<< "${TAGS}"
+          # The registry's digest for the tag just pushed (local RepoDigests can list other names).
+          digest=$(docker buildx imagetools inspect "${SHA_TAG}" --format '{{json .Manifest}}' | jq -r .digest)
+          image="${SHA_TAG%:*}@${digest}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Published ${image}"
 
-      - name: Push app image (same build, from cache)
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v6
+      - name: Attest app image provenance
+        if: steps.push.outcome == 'success'
+        uses: actions/attest-build-provenance@v2
         with:
-          context: .
-          file: apps/spice_facility/docker/allinone/Dockerfile
-          build-args: BASE_IMAGE=${{ needs.base.outputs.image }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=app
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
 
   deploy:
-    name: Deploy to ${{ github.ref_name == 'training' && 'training' || 'dev' }}
+    name: Deploy
     needs: build-test-publish
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/training')
     runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
     environment:
       name: ${{ github.ref_name == 'training' && 'training' || 'dev' }}
       url: ${{ vars.SITE_URL }}
     concurrency:
       group: deploy-${{ github.ref_name }}
       cancel-in-progress: false
+    env:
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
+      IMAGE: ${{ needs.build-test-publish.outputs.image }}
+      IMAGE_TAG: ${{ needs.build-test-publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
+      # Values go single-quoted into the host's .env (Docker Compose data, never sourced as shell) and some
+      # into the SSH config, so a quote or newline would corrupt them; passwords are additionally limited to a
+      # shell- and URL-safe alphabet, hosts and paths to plain characters.
       - name: Environment is configured
         env:
           ENV_NAME: ${{ github.ref_name == 'training' && 'training' || 'dev' }}
-          HAS_SITE_NAME: ${{ vars.SITE_NAME != '' }}
-          HAS_HOST: ${{ secrets.DEPLOY_HOST != '' }}
-          HAS_KEY: ${{ secrets.DEPLOY_SSH_KEY != '' }}
-          HAS_DB: ${{ secrets.DB_ROOT_PASSWORD != '' }}
-          HAS_ADMIN: ${{ secrets.ADMIN_PASSWORD != '' }}
-        run: |
-          missing=""
-          [ "${HAS_SITE_NAME}" = "true" ] || missing="$missing SITE_NAME(variable)"
-          [ "${HAS_HOST}" = "true" ] || missing="$missing DEPLOY_HOST"
-          [ "${HAS_KEY}" = "true" ] || missing="$missing DEPLOY_SSH_KEY"
-          [ "${HAS_DB}" = "true" ] || missing="$missing DB_ROOT_PASSWORD"
-          [ "${HAS_ADMIN}" = "true" ] || missing="$missing ADMIN_PASSWORD"
-          if [ -n "$missing" ]; then
-            echo "::error::Environment '${ENV_NAME}' is missing:${missing} (see docs/deployment/aws-ec2.md)"
-            exit 1
-          fi
-
-      - name: Copy deploy files to the host
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          source: "deploy/docker-compose.yml,deploy/Caddyfile,deploy/deploy.sh"
-          target: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
-          strip_components: 1
-
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1
-        env:
-          # Passed via `envs:` so secret values never appear as literal text in the remote script.
-          IMAGE_TAG: ${{ needs.build-test-publish.outputs.tag }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/ubuntu/spice_next_facility' }}
           SITE_NAME: ${{ vars.SITE_NAME }}
           DOMAIN: ${{ vars.DOMAIN }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'ap-south-1' }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HAS_KEY: ${{ secrets.DEPLOY_SSH_KEY != '' }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
-          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'ap-south-1' }}
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           SPICE_AI_ANTHROPIC_API_KEY: ${{ secrets.SPICE_AI_ANTHROPIC_API_KEY }}
           SPICE_AI_OPENAI_API_KEY: ${{ secrets.SPICE_AI_OPENAI_API_KEY }}
           GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
-          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          # deploy.sh waits up to 15 min for a first-ever site setup, plus a possible rollback.
-          command_timeout: 40m
-          envs: IMAGE_TAG,DEPLOY_PATH,SITE_NAME,DOMAIN,ADMIN_PASSWORD,DB_ROOT_PASSWORD,BACKUP_S3_BUCKET,AWS_DEFAULT_REGION,ALERT_WEBHOOK_URL,SPICE_AI_ANTHROPIC_API_KEY,SPICE_AI_OPENAI_API_KEY,GHCR_PULL_USER,GHCR_PULL_TOKEN
-          script: |
-            set -eu
-            cd "${DEPLOY_PATH}"
-
-            # .env is CI-owned: rewritten from the environment's variables/secrets on every deploy.
-            umask 077
-            cat > .env <<ENV
-            IMAGE_TAG=${IMAGE_TAG}
-            GHCR_OWNER=medtronic-labs
-            SITE_NAME=${SITE_NAME}
-            DOMAIN=${DOMAIN}
-            ADMIN_PASSWORD=${ADMIN_PASSWORD}
-            DB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
-            SPICE_AI_OLLAMA_ENABLED=0
-            SPICE_AI_ANTHROPIC_API_KEY=${SPICE_AI_ANTHROPIC_API_KEY}
-            SPICE_AI_OPENAI_API_KEY=${SPICE_AI_OPENAI_API_KEY}
-            BACKUP_S3_BUCKET=${BACKUP_S3_BUCKET}
-            AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
-            ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL}
-            ENV
-
-            # Private GHCR package: log in with a read-only token if one is configured.
-            if [ -n "${GHCR_PULL_TOKEN}" ]; then
-              echo "${GHCR_PULL_TOKEN}" | docker login ghcr.io -u "${GHCR_PULL_USER}" --password-stdin
+        run: |
+          problems=""
+          [ -n "${IMAGE}" ] || problems="${problems} image(nothing was published by this run)"
+          for name in SITE_NAME DEPLOY_HOST DEPLOY_USER DEPLOY_KNOWN_HOSTS ADMIN_PASSWORD DB_ROOT_PASSWORD; do
+            [ -n "${!name}" ] || problems="${problems} ${name}(missing)"
+          done
+          [ "${HAS_KEY}" = "true" ] || problems="${problems} DEPLOY_SSH_KEY(missing)"
+          for name in ADMIN_PASSWORD DB_ROOT_PASSWORD; do
+            value="${!name}"
+            if [ -n "${value}" ] && ! [[ "${value}" =~ ^[A-Za-z0-9._~+=@%,:/-]{12,}$ ]]; then
+              problems="${problems} ${name}(use 12+ characters from A-Z a-z 0-9 . _ ~ + = @ % , : / -)"
             fi
+          done
+          [[ "${DEPLOY_HOST}" =~ ^[A-Za-z0-9.:-]+$ ]] || problems="${problems} DEPLOY_HOST(hostname or IP only)"
+          [[ "${DEPLOY_USER}" =~ ^[a-z_][a-z0-9_-]*$ ]] || problems="${problems} DEPLOY_USER(plain user name)"
+          [[ "${DEPLOY_PORT}" =~ ^[0-9]+$ ]] || problems="${problems} DEPLOY_PORT(number)"
+          [[ "${DEPLOY_PATH}" =~ ^/[A-Za-z0-9._/-]+$ ]] || problems="${problems} DEPLOY_PATH(absolute path, plain characters)"
+          [[ -z "${GHCR_PULL_USER}" || "${GHCR_PULL_USER}" =~ ^[A-Za-z0-9-]+$ ]] || problems="${problems} GHCR_PULL_USER(GitHub user name)"
+          for name in SITE_NAME DOMAIN AWS_DEFAULT_REGION BACKUP_S3_BUCKET ALERT_WEBHOOK_URL SPICE_AI_ANTHROPIC_API_KEY SPICE_AI_OPENAI_API_KEY; do
+            case "${!name}" in *"'"* | *$'\n'*) problems="${problems} ${name}(contains a quote or newline)" ;; esac
+          done
+          if [ -n "${problems}" ]; then
+            echo "::error::Environment '${ENV_NAME}':${problems} (see docs/deployment/aws-ec2.md)"
+            exit 1
+          fi
 
-            chmod +x deploy.sh
-            ./deploy.sh
+      # The host runs exactly the image this run tested and attested, by digest: a tag moved afterwards (by a
+      # PR or another branch) cannot change what is deployed.
+      # Read access works for a public or a private package.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image is attested by this branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify "oci://${IMAGE}" --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/docker-publish.yml" \
+            --source-ref "${GITHUB_REF}" --deny-self-hosted-runners
+
+      # Runner-native OpenSSH with the host key pinned (no third-party action handles the key or secrets).
+      - name: SSH client
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          (umask 077 && printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key)
+          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host deploy-target
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            BatchMode yes
+            ServerAliveInterval 30
+          CFG
+          ssh deploy-target true
+
+      # .env is CI-owned: rewritten from the environment's variables/secrets on every deploy and copied as a
+      # 0600 file, so no secret appears on a command line on the runner or the host.
+      - name: Write the host's .env
+        env:
+          SITE_NAME: ${{ vars.SITE_NAME }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'ap-south-1' }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          SPICE_AI_ANTHROPIC_API_KEY: ${{ secrets.SPICE_AI_ANTHROPIC_API_KEY }}
+          SPICE_AI_OPENAI_API_KEY: ${{ secrets.SPICE_AI_OPENAI_API_KEY }}
+        run: |
+          umask 077
+          cat > "${RUNNER_TEMP}/deploy.env" <<ENV
+          IMAGE_TAG='${IMAGE_TAG}@${IMAGE#*@}'
+          GHCR_OWNER='medtronic-labs'
+          SITE_NAME='${SITE_NAME}'
+          DOMAIN='${DOMAIN}'
+          ADMIN_PASSWORD='${ADMIN_PASSWORD}'
+          DB_ROOT_PASSWORD='${DB_ROOT_PASSWORD}'
+          DB_TLS='off'
+          SPICE_AI_OLLAMA_ENABLED='0'
+          SPICE_AI_ANTHROPIC_API_KEY='${SPICE_AI_ANTHROPIC_API_KEY}'
+          SPICE_AI_OPENAI_API_KEY='${SPICE_AI_OPENAI_API_KEY}'
+          BACKUP_S3_BUCKET='${BACKUP_S3_BUCKET}'
+          AWS_DEFAULT_REGION='${AWS_DEFAULT_REGION}'
+          ALERT_WEBHOOK_URL='${ALERT_WEBHOOK_URL}'
+          ENV
+
+      - name: Copy deploy files and .env to the host
+        run: |
+          # shellcheck disable=SC2029 # client-side expansion is intended; values are validated above
+          ssh deploy-target "mkdir -p '${DEPLOY_PATH}'"
+          scp -q deploy/docker-compose.yml deploy/Caddyfile deploy/deploy.sh "deploy-target:${DEPLOY_PATH}/"
+          scp -q "${RUNNER_TEMP}/deploy.env" "deploy-target:${DEPLOY_PATH}/.env.new"
+          # shellcheck disable=SC2029
+          ssh deploy-target "cd '${DEPLOY_PATH}' && chmod 600 .env.new && mv .env.new .env && chmod +x deploy.sh"
+
+      # Only for a private GHCR package; the token travels on stdin.
+      - name: Log in to GHCR on the host
+        env:
+          GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          # shellcheck disable=SC2029 # client-side expansion is intended; values are validated above
+          if [ -n "${GHCR_PULL_TOKEN}" ]; then
+            printf '%s' "${GHCR_PULL_TOKEN}" | ssh deploy-target "docker login ghcr.io -u '${GHCR_PULL_USER}' --password-stdin"
+          fi
+
+      # deploy.sh waits up to 15 min for a first-ever site setup, plus a possible rollback.
+      - name: Deploy
+        run: |
+          # shellcheck disable=SC2029 # client-side expansion is intended; values are validated above
+          ssh deploy-target "cd '${DEPLOY_PATH}' && ./deploy.sh"
+
+      - name: Remove credentials from the runner
+        if: always()
+        run: rm -f ~/.ssh/deploy_key "${RUNNER_TEMP}/deploy.env"

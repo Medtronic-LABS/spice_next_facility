@@ -1,0 +1,11 @@
+# Ignore rules for docker/allinone/Dockerfile (BuildKit reads <Dockerfile>.dockerignore next to the Dockerfile).
+# The build context is the directory holding apps/spice_facility (CI: the workspace root), so patterns are
+# relative to it. .git must never reach the image: actions/checkout can leave a token in .git/config, and
+# the history is not runtime code.
+**/.git
+**/.github
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/.env
+**/.env.local

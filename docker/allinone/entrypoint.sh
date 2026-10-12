@@ -16,6 +16,25 @@ cp -f /home/frappe/sites-seed/apps.json "${SITES}/apps.json"
 rm -rf "${SITES}/assets"
 cp -r /home/frappe/sites-seed/assets "${SITES}/assets"
 
+# MariaDB client TLS for every client bench shells out to (mariadb, mariadb-dump, mysqladmin):
+#   off     the bundled MariaDB container on a private Docker network (offers no TLS)
+#   verify  an external server (e.g. RDS): TLS required and the certificate checked, against DB_SSL_CA if set
+DB_TLS="${DB_TLS:-off}"
+echo "[entrypoint] MariaDB client TLS: ${DB_TLS}"
+case "${DB_TLS}" in
+	off) printf '[client]\nskip-ssl\n' > /etc/mysql/conf.d/spice-client.cnf ;;
+	verify)
+		printf '[client]\nssl\nssl-verify-server-cert\n' > /etc/mysql/conf.d/spice-client.cnf
+		if [ -n "${DB_SSL_CA:-}" ]; then
+			printf 'ssl-ca=%s\n' "${DB_SSL_CA}" >> /etc/mysql/conf.d/spice-client.cnf
+		fi
+		;;
+	*)
+		echo "[entrypoint] DB_TLS must be 'off' or 'verify', got '${DB_TLS}'" >&2
+		exit 1
+		;;
+esac
+
 echo "[entrypoint] writing common_site_config.json"
 cat > "${SITES}/common_site_config.json" <<JSON
 {

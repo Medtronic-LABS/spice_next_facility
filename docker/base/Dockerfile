@@ -12,6 +12,10 @@ ARG FRAPPE_REF
 ARG ERPNEXT_REF
 ARG HEALTHCARE_REF
 ARG FRAPPE_THEME_REF
+ARG FRAPPE_COMMIT
+ARG ERPNEXT_COMMIT
+ARG HEALTHCARE_COMMIT
+ARG FRAPPE_THEME_COMMIT
 
 USER frappe
 WORKDIR /home/frappe
@@ -27,6 +31,12 @@ WORKDIR /home/frappe/frappe-bench
 RUN git clone --depth 1 --branch "${ERPNEXT_REF}" https://github.com/frappe/erpnext.git apps/erpnext \
 	&& git clone --depth 1 --branch "${HEALTHCARE_REF}" https://github.com/frappe/health.git apps/healthcare \
 	&& git clone --depth 1 --branch "${FRAPPE_THEME_REF}" https://github.com/Suvaidyam/frappe_theme.git apps/frappe_theme
+
+# A tag can be moved upstream; refuse to build anything but the commits pinned in versions.env.
+RUN check() { actual=$(git -C "apps/$1" rev-parse HEAD); \
+		[ "${actual}" = "$2" ] || { echo "apps/$1 is ${actual}, versions.env pins $2" >&2; exit 1; }; }; \
+	check frappe "${FRAPPE_COMMIT}" && check erpnext "${ERPNEXT_COMMIT}" \
+	&& check healthcare "${HEALTHCARE_COMMIT}" && check frappe_theme "${FRAPPE_THEME_COMMIT}"
 
 RUN for app in erpnext healthcare frappe_theme; do \
 		if [ -f "apps/${app}/package.json" ]; then yarn --cwd "apps/${app}" install --check-files; fi; \
@@ -57,9 +67,9 @@ FROM ${BENCH_IMAGE}
 USER root
 
 # Runtime packages: DB client (site setup, bench backup), Redis, supervisord, AWS CLI (S3 backups).
-# The MariaDB 11.8 client insists on TLS by default; the MariaDB 10.6 container offers none. The client
-# config keeps TLS when the server supports it (e.g. RDS) and stops requiring it otherwise, for every
-# client Frappe shells out to (mariadb, mariadb-dump, mysqladmin).
+# spice-client.cnf holds the MariaDB client's TLS mode for every client Frappe shells out to (mariadb,
+# mariadb-dump, mysqladmin). The entrypoint writes it from DB_TLS on each boot (as root on a host, as
+# frappe in CI), so it is created here owned by frappe.
 RUN apt-get update \
 	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 		mariadb-client \
@@ -68,7 +78,7 @@ RUN apt-get update \
 		awscli \
 		curl \
 	&& rm -rf /var/lib/apt/lists/* \
-	&& printf '[client]\ndisable-ssl-verify-server-cert\n' > /etc/mysql/conf.d/spice-client.cnf \
+	&& install -o frappe -g frappe -m 644 /dev/null /etc/mysql/conf.d/spice-client.cnf \
 	&& mkdir -p /var/log/supervisor /home/frappe/.redis \
 	&& chown -R frappe:frappe /var/log/supervisor /home/frappe/.redis
 
