@@ -20,7 +20,8 @@ class GeminiProvider(LLMProvider):
 		return {"x-goog-api-key": self.config.api_key or "", "Content-Type": "application/json"}
 
 	def _generate(self, system, messages, max_tokens, schema=None):
-		generation = {"maxOutputTokens": max_tokens + THINKING_ALLOWANCE, "temperature": self.config.temperature}
+		# No temperature: Gemini 3 models are tuned for their default (1.0) and can loop at low values.
+		generation = {"maxOutputTokens": max_tokens + THINKING_ALLOWANCE}
 		if schema is not None:
 			generation.update({"responseMimeType": "application/json", "responseJsonSchema": _encode_empty(schema)})
 		payload = {
