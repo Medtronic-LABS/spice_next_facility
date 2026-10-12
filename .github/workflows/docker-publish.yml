@@ -515,10 +515,16 @@ jobs:
         run: |
           # shellcheck disable=SC2029 # client-side expansion is intended; values are validated above
           ssh deploy-target "mkdir -p '${DEPLOY_PATH}'"
-          scp -q deploy/docker-compose.yml deploy/Caddyfile deploy/deploy.sh "deploy-target:${DEPLOY_PATH}/"
+          scp -q deploy/docker-compose.yml deploy/Caddyfile deploy/deploy.sh deploy/prepare-host.sh "deploy-target:${DEPLOY_PATH}/"
           scp -q "${RUNNER_TEMP}/deploy.env" "deploy-target:${DEPLOY_PATH}/.env.new"
           # shellcheck disable=SC2029
-          ssh deploy-target "cd '${DEPLOY_PATH}' && chmod 600 .env.new && mv .env.new .env && chmod +x deploy.sh"
+          ssh deploy-target "cd '${DEPLOY_PATH}' && chmod 600 .env.new && mv .env.new .env && chmod +x deploy.sh prepare-host.sh"
+
+      # Installs Docker + compose and adds swap on a fresh Ubuntu host; a no-op once the host is ready.
+      - name: Prepare the host
+        run: |
+          # shellcheck disable=SC2029 # client-side expansion is intended; values are validated above
+          ssh deploy-target "'${DEPLOY_PATH}/prepare-host.sh'"
 
       # Only for a private GHCR package; the token travels on stdin.
       - name: Log in to GHCR on the host
