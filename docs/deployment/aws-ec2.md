@@ -57,7 +57,7 @@ version change. Open a PR into `develop`, merge. That run builds the new base on
 workflow manually with **rebuild_base** to rebuild it on demand.
 
 No local AI model runs here (`SPICE_AI_OLLAMA_ENABLED=0`): AI summaries are off; Ask Data works with
-Claude or OpenAI, which see only the question and field names, and answers are written from the results.
+Claude, OpenAI or Gemini, which see only the question and field names, and answers are written from the results.
 
 ### Trying the stack locally
 
@@ -140,6 +140,7 @@ Each may deploy only from its own branch (deployment branch policy: `dev` ← `d
 | `ALERT_WEBHOOK_URL` | optional Slack/Teams webhook for backup failures |
 | `SPICE_AI_ANTHROPIC_API_KEY` | optional Claude key for Ask Data |
 | `SPICE_AI_OPENAI_API_KEY` | optional OpenAI key for Ask Data |
+| `SPICE_AI_GEMINI_API_KEY` | optional Google Gemini key for Ask Data — from a **billing-enabled (paid)** project: on the free tier Google may use prompts to improve its products |
 | `GHCR_PULL_USER`, `GHCR_PULL_TOKEN` | if the GHCR package is private: a user and a PAT with `read:packages` |
 
 Both passwords must be 12+ characters from `A-Z a-z 0-9 . _ ~ + = @ % , : / -` (the deploy job checks this
@@ -176,7 +177,7 @@ Then open the environment's URL, log in as Administrator and complete the **ERPN
 currency, fiscal year). Health's masters (departments, practitioners, service units) come next; demo data
 can be loaded with `bench --site <SITE_NAME> execute spice_facility.demo.seed.run` (non-production only).
 
-To use Ask Data with Claude/OpenAI, open **SPICE AI Settings**, enable the provider, set the model and use
+To use Ask Data with Claude, OpenAI or Gemini, open **SPICE AI Settings**, enable the provider, set the model and use
 **Test** — keys supplied as secrets above are picked up automatically.
 
 ## 5. Every later deploy

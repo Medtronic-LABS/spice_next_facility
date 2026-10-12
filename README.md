@@ -13,7 +13,7 @@ Facility (hospital) layer for SPICE on top of **Frappe Health** (`healthcare`, g
 | **Overview tab** on 13 Health forms — related-record tables, number cards, charts and clinical summaries via frappe_theme `sva_ft` | `form_ux/` (spec → apply), `api/form_summary.py`, `public/js/form_ux*.js`, `public/css/form_ux.css` | install + every `bench migrate` |
 | Missing / broken Connections (e.g. Patient → Emergency Record, Practitioner → Inpatient Record on `primary_practitioner`) | `form_ux/connections.py` | install + every `bench migrate` |
 | **AI summary** of the open record (Patient, Encounter, Admission, Emergency, Therapy Plan) on the local model | `ai/summary_context.py`, `ai/clinical_flags.py`, `api/ai_summary.py`, `public/js/ai_summary.js` | on demand, cached |
-| **Ask Data** — talk to data with Ollama, Claude or OpenAI; text + chart + table, page-aware floating chat | `ai/{data_catalog,query,talk_to_data}.py`, `api/talk_to_data.py`, page `ask-data`, `public/js/ask_data/` | on demand |
+| **Ask Data** — talk to data with Ollama, Claude, OpenAI or Gemini; text + chart + table, page-aware floating chat | `ai/{data_catalog,query,talk_to_data}.py`, `api/talk_to_data.py`, page `ask-data`, `public/js/ask_data/` | on demand |
 | Read-only **MCP server** over the same governed queries | `api/mcp.py` | on demand |
 | frappe_theme fix: form-scoped Dashboard Charts break on the `{}` filter frappe_theme always sends | `overrides/frappe_theme.py` (`override_whitelisted_methods`) | always |
 
@@ -47,11 +47,15 @@ fields twice, so custom-field validation is skipped for it only while that defec
 
 #### AI (SPICE AI Settings)
 
-- **Providers:** Ollama (local, default `http://ollama:11434`, `llama3.1:8b`), Claude and OpenAI (or any
-  OpenAI-compatible endpoint). Keys are encrypted Password fields, never sent to the browser; site_config /
-  env keys `spice_ai_ollama_url`, `spice_ai_anthropic_api_key`, `spice_ai_openai_api_key` override them.
+- **Providers:** Ollama (local, default `http://ollama:11434`, `llama3.1:8b`), Claude, OpenAI (or any
+  OpenAI-compatible endpoint) and Gemini (Google). Keys are encrypted Password fields, never sent to the
+  browser; site_config / env keys `spice_ai_ollama_url`, `spice_ai_anthropic_api_key`,
+  `spice_ai_openai_api_key`, `spice_ai_gemini_api_key` override them (a key supplied this way satisfies
+  the settings form, so it need not also be stored).
   Each provider has **Test** / **Refresh models** buttons. Access is limited to **Allowed roles**.
 - **Data policy:** cloud models receive only the question, dataset/field names and earlier query plans.
+  Use a billing-enabled (paid) Google project for Gemini: free-tier prompts may be used to improve Google's
+  products.
   Records, results and page context go only to the local model, which writes every answer and summary.
 - **AI summary:** abnormal labs/vitals are flagged in code (`clinical_flags.py`) from each record's own
   normal ranges; a `must_mention` checklist keeps the small model on the important facts. Summaries are

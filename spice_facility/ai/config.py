@@ -10,8 +10,11 @@ from dataclasses import dataclass, field
 import frappe
 
 SETTINGS = "SPICE AI Settings"
-OLLAMA, CLAUDE, OPENAI = "Ollama", "Claude", "OpenAI"
+OLLAMA, CLAUDE, OPENAI, GEMINI = "Ollama", "Claude", "OpenAI", "Gemini"
+PROVIDER_NAMES = (OLLAMA, CLAUDE, OPENAI, GEMINI)
 LOCAL_PROVIDERS = (OLLAMA,)
+# The settings field holding each cloud provider's API key
+KEY_FIELDS = {CLAUDE: "anthropic_api_key", OPENAI: "openai_api_key", GEMINI: "gemini_api_key"}
 
 # site_config / env keys that override stored values
 OVERRIDES = {
@@ -19,6 +22,7 @@ OVERRIDES = {
 	"ollama_url": "spice_ai_ollama_url",
 	"anthropic_api_key": "spice_ai_anthropic_api_key",
 	"openai_api_key": "spice_ai_openai_api_key",
+	"gemini_api_key": "spice_ai_gemini_api_key",
 }
 
 
@@ -69,6 +73,11 @@ def _override(fieldname):
 	return value if value is not None else os.environ.get(key.upper())
 
 
+def has_override(fieldname) -> bool:
+	"""Whether site_config / the environment supplies this setting (e.g. an API key injected by the deploy)."""
+	return _override(fieldname) not in (None, "")
+
+
 def _flag(settings, fieldname):
 	"""A checkbox setting, unless the deployment overrides it (e.g. spice_ai_ollama_enabled=0)."""
 	value = _override(fieldname)
@@ -104,6 +113,11 @@ def get_config() -> AIConfig:
 			name=OPENAI, enabled=bool(s.openai_enabled), model=s.openai_model,
 			base_url=(s.openai_base_url or "").rstrip("/") or None, timeout=s.openai_timeout or 60,
 			in_chat=bool(s.openai_in_chat), is_local=False, api_key=_secret(s, "openai_api_key"),
+		),
+		GEMINI: ProviderConfig(
+			name=GEMINI, enabled=bool(s.gemini_enabled), model=s.gemini_model,
+			base_url=(s.gemini_base_url or "").rstrip("/") or None, timeout=s.gemini_timeout or 60,
+			in_chat=bool(s.gemini_in_chat), is_local=False, api_key=_secret(s, "gemini_api_key"),
 		),
 	}
 	local_enabled = any(p.enabled and p.is_local for p in providers.values())

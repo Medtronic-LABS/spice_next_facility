@@ -412,6 +412,7 @@ jobs:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           SPICE_AI_ANTHROPIC_API_KEY: ${{ secrets.SPICE_AI_ANTHROPIC_API_KEY }}
           SPICE_AI_OPENAI_API_KEY: ${{ secrets.SPICE_AI_OPENAI_API_KEY }}
+          SPICE_AI_GEMINI_API_KEY: ${{ secrets.SPICE_AI_GEMINI_API_KEY }}
           GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
         run: |
           problems=""
@@ -433,7 +434,7 @@ jobs:
           [[ "${DATA_DIR}" =~ ^/[A-Za-z0-9._/-]*[A-Za-z0-9._-]$ ]] || problems="${problems} DATA_DIR(absolute path, plain characters, not /)"
           [[ -z "${DATA_VOLUME_ID}" || "${DATA_VOLUME_ID}" =~ ^vol-[0-9a-f]+$ ]] || problems="${problems} DATA_VOLUME_ID(vol-...)"
           [[ -z "${GHCR_PULL_USER}" || "${GHCR_PULL_USER}" =~ ^[A-Za-z0-9-]+$ ]] || problems="${problems} GHCR_PULL_USER(GitHub user name)"
-          for name in SITE_NAME DOMAIN AWS_DEFAULT_REGION BACKUP_S3_BUCKET ALERT_WEBHOOK_URL SPICE_AI_ANTHROPIC_API_KEY SPICE_AI_OPENAI_API_KEY; do
+          for name in SITE_NAME DOMAIN AWS_DEFAULT_REGION BACKUP_S3_BUCKET ALERT_WEBHOOK_URL SPICE_AI_ANTHROPIC_API_KEY SPICE_AI_OPENAI_API_KEY SPICE_AI_GEMINI_API_KEY; do
             case "${!name}" in *"'"* | *$'\n'*) problems="${problems} ${name}(contains a quote or newline)" ;; esac
           done
           if [ -n "${problems}" ]; then
@@ -498,6 +499,7 @@ jobs:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           SPICE_AI_ANTHROPIC_API_KEY: ${{ secrets.SPICE_AI_ANTHROPIC_API_KEY }}
           SPICE_AI_OPENAI_API_KEY: ${{ secrets.SPICE_AI_OPENAI_API_KEY }}
+          SPICE_AI_GEMINI_API_KEY: ${{ secrets.SPICE_AI_GEMINI_API_KEY }}
         run: |
           umask 077
           cat > "${RUNNER_TEMP}/deploy.env" <<ENV
@@ -512,6 +514,7 @@ jobs:
           SPICE_AI_OLLAMA_ENABLED='0'
           SPICE_AI_ANTHROPIC_API_KEY='${SPICE_AI_ANTHROPIC_API_KEY}'
           SPICE_AI_OPENAI_API_KEY='${SPICE_AI_OPENAI_API_KEY}'
+          SPICE_AI_GEMINI_API_KEY='${SPICE_AI_GEMINI_API_KEY}'
           BACKUP_S3_BUCKET='${BACKUP_S3_BUCKET}'
           AWS_DEFAULT_REGION='${AWS_DEFAULT_REGION}'
           ALERT_WEBHOOK_URL='${ALERT_WEBHOOK_URL}'

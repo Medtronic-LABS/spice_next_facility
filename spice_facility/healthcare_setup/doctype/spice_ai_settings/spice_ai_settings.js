@@ -4,6 +4,7 @@ const SPICE_AI_PROVIDERS = [
 	{ name: "Ollama", enabled: "ollama_enabled", model: "ollama_model", status: "ollama_status" },
 	{ name: "Claude", enabled: "claude_enabled", model: "claude_model", status: "claude_status", key: "anthropic_api_key" },
 	{ name: "OpenAI", enabled: "openai_enabled", model: "openai_model", status: "openai_status", key: "openai_api_key" },
+	{ name: "Gemini", enabled: "gemini_enabled", model: "gemini_model", status: "gemini_status", key: "gemini_api_key" },
 ];
 
 frappe.ui.form.on("SPICE AI Settings", {
@@ -36,8 +37,8 @@ async function spice_ai_test(frm, provider, fill_models = false) {
 function spice_ai_render_status(frm, provider, result) {
 	const S = spice_facility.ai.strings.settings;
 	const esc = frappe.utils.escape_html;
-	const key_line = provider.key
-		? `<div class="text-muted small">${esc(frm.doc[provider.key] ? S.key_saved : S.key_missing)}</div>` : "";
+	const key_state = result?.key_from_deployment ? S.key_deployment : frm.doc[provider.key] ? S.key_saved : S.key_missing;
+	const key_line = provider.key ? `<div class="text-muted small">${esc(key_state)}</div>` : "";
 	let body = "";
 	if (result?.pending) body = `<div class="text-muted">${esc(S.testing)}</div>`;
 	else if (result && result.ok) {

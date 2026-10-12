@@ -4,6 +4,7 @@ from spice_facility.desk_navigation.apply import apply_navigation, remove_naviga
 from spice_facility.form_ux.apply import apply_form_ux, remove_form_ux
 from spice_facility.setup.fixes import apply_fixes
 
+AI_SETTINGS = "SPICE AI Settings"
 AI_DEFAULT_ROLES = ("Physician", "Nursing User", "Healthcare Administrator", "System Manager")
 
 APP = "spice_facility"
@@ -17,6 +18,7 @@ def after_install():
 	apply_fixes()
 	apply_navigation()
 	apply_form_ux()
+	fill_ai_settings_defaults()
 	seed_ai_roles()
 
 
@@ -24,6 +26,7 @@ def after_migrate():
 	apply_fixes()
 	apply_navigation()
 	apply_form_ux()
+	fill_ai_settings_defaults()
 	seed_ai_roles()
 
 
@@ -48,9 +51,22 @@ def release_hand_made_modules():
 		frappe.delete_doc("Module Def", module, ignore_permissions=True, force=True)
 
 
+def fill_ai_settings_defaults():
+	"""Give settings fields added in an update their declared defaults (e.g. a new provider's API URL).
+
+	A Single gets its defaults only while it has never been saved; afterwards a new field reads as empty.
+	Only fields that have no stored value are filled, so a site's own choices are never overridden. Runs
+	before anything saves the settings, which would store the new fields as empty."""
+	stored = frappe.db.get_singles_dict(AI_SETTINGS)
+	for df in frappe.get_meta(AI_SETTINGS).fields:
+		if df.default is not None and stored.get(df.fieldname) is None:
+			frappe.db.set_single_value(AI_SETTINGS, df.fieldname, df.default)
+	frappe.clear_document_cache(AI_SETTINGS, AI_SETTINGS)
+
+
 def seed_ai_roles():
 	"""Give the clinical roles access to AI features the first time; never override a site's choice."""
-	settings = frappe.get_single("SPICE AI Settings")
+	settings = frappe.get_single(AI_SETTINGS)
 	if settings.allowed_roles:
 		return
 	for role in AI_DEFAULT_ROLES:
