@@ -2,7 +2,7 @@
 
 | Branch | GitHub environment | URL | EC2 |
 |---|---|---|---|
-| `develop` | `dev` | https://spice-facility-dev.labsplatform.com | its own instance |
+| `develop` | `dev` | https://spice-next-facility-dev.labsplatform.com | its own instance |
 | `training` | `training` | https://spice-facility-training.labsplatform.com | its own instance |
 | `main`, tags `v*` | — | build, test and publish only | — |
 
@@ -84,14 +84,20 @@ Do this **once per environment** (dev and training each get their own instance, 
    a Docker bridge, so set the metadata hop limit to 2:
    `aws ec2 modify-instance-metadata-options --instance-id <id> --http-put-response-hop-limit 2 --http-tokens required`
 6. **DNS**: an `A` record per environment → that instance's Elastic IP:
-   `spice-facility-dev.labsplatform.com` (dev) and `spice-facility-training.labsplatform.com` (training).
+   `spice-next-facility-dev.labsplatform.com` (dev) and `spice-facility-training.labsplatform.com` (training).
    Caddy needs it, plus ports 80/443 open, to obtain the Let's Encrypt certificate.
 
 ## 2. Prepare the instance (once)
 
+Nothing to install by hand on Ubuntu: every deploy runs `deploy/prepare-host.sh` on the host first. It
+installs Docker + the compose plugin from Ubuntu's archive (`docker.io`, `docker-compose-v2`), adds the deploy
+user to the `docker` group and creates a 4 GB swap file if the host has none; on a ready host it changes
+nothing. This needs passwordless `sudo` for the deploy user (the default on EC2's `ubuntu` user). Without it,
+or on a non-Ubuntu host, run the same script yourself once as a user who can sudo:
+
 ```bash
-scp deploy/ec2-bootstrap.sh ubuntu@<elastic-ip>:~
-ssh ubuntu@<elastic-ip> 'bash ec2-bootstrap.sh'   # Docker + Compose, 4 GB swap, /home/ubuntu/spice_next_facility
+scp deploy/prepare-host.sh ubuntu@<elastic-ip>:~
+ssh ubuntu@<elastic-ip> 'bash prepare-host.sh'
 ```
 
 Create a **deploy key pair** for GitHub (`ssh-keygen -t ed25519 -f deploy_key -N ""`), append
@@ -131,9 +137,9 @@ before touching the host); no secret may contain a quote or newline.
 
 | Variable | dev | training |
 |---|---|---|
-| `SITE_NAME` (Frappe site name) | `spice-facility-dev.labsplatform.com` | `spice-facility-training.labsplatform.com` |
+| `SITE_NAME` (Frappe site name) | `spice-next-facility-dev.labsplatform.com` | `spice-facility-training.labsplatform.com` |
 | `DOMAIN` (bare host = HTTPS; `http://host` = plain HTTP) | same as `SITE_NAME` | same as `SITE_NAME` |
-| `SITE_URL` (link shown on the deploy) | `https://spice-facility-dev.labsplatform.com` | `https://spice-facility-training.labsplatform.com` |
+| `SITE_URL` (link shown on the deploy) | `https://spice-next-facility-dev.labsplatform.com` | `https://spice-facility-training.labsplatform.com` |
 | `DEPLOY_PATH` | `/home/ubuntu/spice_next_facility` |
 | `AWS_DEFAULT_REGION` | `ap-south-1` |
 
@@ -147,6 +153,7 @@ Push to `develop` (dev) or `training` (training), or run the workflow manually o
 1. checks the environment's secrets and that the image was built and attested by this branch,
 2. copies `docker-compose.yml`, `Caddyfile`, `deploy.sh` and a freshly written `.env` (CI-owned; do not edit
    it on the host) to `DEPLOY_PATH` over SSH with the pinned host key,
+   then runs `prepare-host.sh` (installs Docker and swap if missing),
 3. runs `deploy.sh`: pull the `sha-<commit>@sha256:…` image → `docker compose up -d` → wait for
    `/api/method/ping` (a first deploy creates the site and installs ERPNext, Health, frappe_theme and
    spice_facility — allow ~10 minutes) → on failure, roll back to the last healthy tag.

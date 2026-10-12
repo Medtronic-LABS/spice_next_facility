@@ -70,7 +70,7 @@ fields twice, so custom-field validation is skipped for it only while that defec
 
 ### Deploy (AWS EC2)
 
-`develop` → https://spice-facility-dev.labsplatform.com, `training` → https://spice-facility-training.labsplatform.com
+`develop` → https://spice-next-facility-dev.labsplatform.com, `training` → https://spice-facility-training.labsplatform.com
 (one EC2 each); `main` and `v*` tags build, test and publish only. `.github/workflows/docker-publish.yml` builds
 a thin app image on a **reusable base** (`docker/base/`: Frappe, ERPNext, Frappe Health and frappe_theme pinned
 in `docker/base/versions.env`, rebuilt only when that file changes), runs the test suite inside it against
