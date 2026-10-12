@@ -22,6 +22,7 @@ from frappe.utils import nowdate
 from spice_facility.ai import data_catalog, prompts, query
 from spice_facility.ai.config import get_config
 from spice_facility.ai.providers.registry import chat_provider, has_local_provider, local_provider
+from spice_facility.ai.summary_context import IDENTIFYING_KEYS
 from spice_facility.ai.summary_context import SUPPORTED as RECORD_DOCTYPES
 from spice_facility.ai.summary_context import build_context, record_refs, serialise
 
@@ -34,6 +35,10 @@ SERIES_WORDS = re.compile(r"\b(per|by|each|every|over)\s+(day|week|month|quarter
 MODE_SCHEMA = {"type": "object", "properties": {"mode": {"type": "string", "enum": ["record", "data"]}},
                "required": ["mode"]}
 NARRATE_ROWS = 50
+# Filter values on these fields identify a person; they never go to a cloud planner inside an earlier plan.
+IDENTIFYING_FIELDS = IDENTIFYING_KEYS | {"patient", "mobile_no", "phone_no", "email_id", "customer", "customer_name",
+                                         "inpatient_record", "insurance_subscriber", "ref_practitioner"}
+REDACTED = "[redacted]"
 MAX_CITED = 20
 HISTORY_TURNS = 2
 
@@ -144,9 +149,21 @@ def answer_record(question, page):
 	return {"mode": "record", "text": text, "narrator": local.model, "sources": cited_records(text, page)}
 
 
+def redact_plan(spec):
+	"""An earlier plan as a cloud planner may see it: identifying filter values replaced by a placeholder."""
+	spec = dict(spec or {})
+	spec["filters"] = [{**f, "value": REDACTED} if f.get("field") in IDENTIFYING_FIELDS and f.get("value") else f
+	                   for f in spec.get("filters") or [] if isinstance(f, dict)]
+	return spec
+
+
 def plan(question, provider, history, page, datasets):
-	"""Chat provider sees: question, dataset/field names, earlier plans. Nothing else."""
-	prior = "\n".join(f"Earlier question: {h.get('question')}\nEarlier plan: {json.dumps(h.get('spec'))}"
+	"""Chat provider sees: question, dataset/field names, earlier plans. Nothing else.
+
+	`history` comes from the user's own logs of the same chat (never from the browser), and holds plans only: page
+	and list-view scope is kept out of stored plans, and a cloud planner gets identifying filter values redacted."""
+	shown_plan = (lambda spec: spec) if provider.is_local else redact_plan
+	prior = "\n".join(f"Earlier question: {h.get('question')}\nEarlier plan: {json.dumps(shown_plan(h.get('spec')))}"
 	                  for h in (history or [])[-HISTORY_TURNS:] if h.get("spec"))
 	content = f"{prior}\n\nQuestion: {question}".strip()
 	names = [d["doctype"] for d in datasets]
@@ -174,11 +191,13 @@ def answer_data(question, provider, history, page, use_context):
 	dataset, raw_spec = plan(question, provider, history, page if use_context else None, datasets)
 	spec = tidy(query.validate(raw_spec, dataset, config.max_groups), dataset, question)
 	scope, scope_labels = implicit_scope(dataset, page) if use_context else ({}, [])
+	# List-view filters scope this answer only. They stay out of the stored plan, which later goes back to the
+	# planner as history, and travel beside it as `scope_filters` (e.g. for pinning the chart).
+	scope_filters = []
 	if use_context:
-		extra, labels = list_scope(dataset, page)
-		spec["filters"] += extra
+		scope_filters, labels = list_scope(dataset, page)
 		scope_labels += labels
-	result = query.execute(spec, dataset, scope, config.max_rows)
+	result = query.execute({**spec, "filters": spec["filters"] + scope_filters}, dataset, scope, config.max_rows)
 	shown = query.present(result, spec, dataset)
 	source = query.describe_parts(spec, dataset, scope_labels)
 
@@ -187,7 +206,8 @@ def answer_data(question, provider, history, page, use_context):
 		return {"mode": "data", "text": plain_summary(shown, spec, dataset, result["rows_read"]),
 		        "title": spec["title"] or dataset["label"], "dataset": dataset["doctype"], "spec": spec,
 		        "how": query.describe(spec, dataset, scope_labels), "source": source, "scope": scope_labels,
-		        "rows_read": result["rows_read"], "truncated": result["truncated"], "narrator": None, **shown}
+		        "rows_read": result["rows_read"], "truncated": result["truncated"], "narrator": None,
+		        "scope_filters": scope_filters, **shown}
 	local = local_provider()
 	measure_type = dataset["fields"].get(spec["measure"]["field"], {}).get("type") or frappe.get_meta(
 		dataset["doctype"]).get_field(spec["measure"]["field"]).fieldtype if spec["measure"]["field"] else None
@@ -201,7 +221,7 @@ def answer_data(question, provider, history, page, use_context):
 		"mode": "data", "text": keep_known_links(text, allowed), "title": spec["title"] or dataset["label"],
 		"dataset": dataset["doctype"], "spec": spec, "how": query.describe(spec, dataset, scope_labels), "source": source,
 		"scope": scope_labels, "rows_read": result["rows_read"], "truncated": result["truncated"],
-		"narrator": local.model, **shown,
+		"narrator": local.model, "scope_filters": scope_filters, **shown,
 	}
 
 

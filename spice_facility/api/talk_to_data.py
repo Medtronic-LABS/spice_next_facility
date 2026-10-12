@@ -15,7 +15,7 @@ from spice_facility.ai import data_catalog, query
 from spice_facility.ai.config import ensure_ai_access, get_config
 from spice_facility.ai.providers.base import AIProviderError
 from spice_facility.ai.providers.registry import chat_provider
-from spice_facility.ai.talk_to_data import run_question
+from spice_facility.ai.talk_to_data import HISTORY_TURNS, run_question
 from spice_facility.api.ai_summary import enforce_rate_limit
 
 LOG = "SPICE AI Query Log"
@@ -62,7 +62,7 @@ def _user_allowed():
 
 @frappe.whitelist(methods=["POST"])
 def ask(question: str, provider: str | None = None, page: str | None = None, use_context: int = 1,
-        history: str | None = None, thread: str | None = None) -> dict:
+        thread: str | None = None) -> dict:
 	ensure_ai_access()
 	if not get_config().chat_enabled:
 		frappe.throw(_("Ask Data is turned off."), frappe.ValidationError)
@@ -72,20 +72,40 @@ def ask(question: str, provider: str | None = None, page: str | None = None, use
 	enforce_rate_limit()
 	chosen = chat_provider(provider)  # validated now, and logged with the question even if it is stopped or fails
 	page = json.loads(page) if isinstance(page, str) and page else (page or None)
-	if thread and THREAD_ID.match(thread):
-		# A chat from before threads existed is keyed by its one question's log name: that question joins the thread.
-		frappe.db.set_value(LOG, {"name": thread, "user": frappe.session.user, "thread": ["is", "not set"]},
-		                    "thread", thread, update_modified=False)
-	else:
-		thread = frappe.generate_hash(length=16)
+	thread = _own_thread(thread) or frappe.generate_hash(length=16)
 	log = frappe.get_doc({"doctype": LOG, "user": frappe.session.user, "thread": thread, "question": question, "status": "Queued",
 	                      "provider": chosen.name, "model": chosen.model,
 	                      "context_doctype": (page or {}).get("doctype") if use_context else None,
 	                      "context_name": (page or {}).get("name") if use_context else None}).insert(ignore_permissions=True)
 	frappe.enqueue("spice_facility.api.talk_to_data.run", queue="long", timeout=600, log=log.name, provider=chosen.name,
-	               page=page, use_context=int(use_context), history=history, job_id=_job_id(log.name),
+	               page=page, use_context=int(use_context), job_id=_job_id(log.name),
 	               enqueue_after_commit=True)
 	return {"log": log.name, "status": "Queued", "thread": thread}
+
+
+def _own_thread(thread):
+	"""The thread id to continue, only if it is one of the session user's own chats (ids are minted by the server).
+
+	A chat from before threads existed is keyed by its one question's log name: that question joins the thread."""
+	if not thread or not THREAD_ID.match(thread):
+		return None
+	me = frappe.session.user
+	if frappe.db.exists(LOG, {"user": me, "thread": thread}):
+		return thread
+	if frappe.db.exists(LOG, {"user": me, "name": thread, "thread": ["is", "not set"]}):
+		frappe.db.set_value(LOG, thread, "thread", thread, update_modified=False)
+		return thread
+	return None
+
+
+def _history(row):
+	"""The plans of this chat's earlier answered questions, from the user's own logs (never from the browser)."""
+	if not row.thread:
+		return []
+	earlier = frappe.get_all(LOG, {"user": row.user, "thread": row.thread, "status": "Answered",
+	                               "creation": ["<", row.creation], "spec": ["is", "set"]},
+	                         ["question", "spec"], order_by="creation desc", limit=HISTORY_TURNS)
+	return [{"question": r.question, "spec": json.loads(r.spec)} for r in reversed(earlier)]
 
 
 def _job_id(log):
@@ -104,7 +124,7 @@ def _set_if(log, statuses, values):
 	update.where((table.name == log) & table.status.isin(list(statuses))).run()
 
 
-def run(log, provider=None, page=None, use_context=1, history=None):
+def run(log, provider=None, page=None, use_context=1, history=None):  # `history` kept for jobs queued before upgrade
 	row = frappe.get_doc(LOG, log)
 	_set_if(log, ("Queued",), {"status": "Running"})
 	# Commit before the model call: no row lock is held while it runs, and stop() sees "Running".
@@ -113,8 +133,7 @@ def run(log, provider=None, page=None, use_context=1, history=None):
 		return  # stopped before it started
 	try:
 		frappe.set_user(row.user)
-		answer, meta = run_question(row.question, provider, page, bool(use_context),
-		                            json.loads(history) if isinstance(history, str) and history else history)
+		answer, meta = run_question(row.question, provider, page, bool(use_context), _history(row))
 		_set_if(log, ("Running",), {"status": "Answered", "answer_json": json.dumps(answer, default=str),
 		                            "spec": json.dumps(answer.get("spec")) if answer.get("spec") else None, **meta})
 	except (AIProviderError, query.QueryValidationError, frappe.ValidationError, frappe.PermissionError) as error:
@@ -236,7 +255,10 @@ def pin_chart(log: str, title: str) -> dict:
 	row = _own_log(log)
 	answer = json.loads(row.answer_json or "{}")
 	dataset = data_catalog.get(answer.get("dataset"))
-	args = chart_args(answer.get("spec") or {}, dataset, (title or answer.get("title") or "")[:140]) if dataset else None
+	spec = answer.get("spec") or {}
+	# the list-view filters the answer was scoped by belong in the pinned chart too
+	spec = {**spec, "filters": (spec.get("filters") or []) + (answer.get("scope_filters") or [])} if spec else spec
+	args = chart_args(spec, dataset, (title or answer.get("title") or "")[:140]) if dataset else None
 	if not args:
 		frappe.throw(_("This answer cannot be saved as a Dashboard Chart."), frappe.ValidationError)
 	if frappe.db.exists("Dashboard Chart", args["chart_name"]):
