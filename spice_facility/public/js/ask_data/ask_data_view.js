@@ -72,6 +72,7 @@ frappe.provide("spice_facility.ai");
 			this.$root.find(".sf-ask-side-toggle").on("click", () => this.toggle_side());
 			this.$root.on("click", ".sf-ask-thread-item", (e) => this.open_thread(e.currentTarget.dataset.thread));
 			this.$root.on("click", ".sf-ask-thread-del", (e) => this.delete_thread(e.currentTarget.dataset.thread));
+			this.$root.on("click", ".sf-ask-thread-print", (e) => this.print_chat(e.currentTarget.dataset.thread));
 			const wide_page_default = () => this.mode === "page" && !this.overlay() && !this.side_pref_hidden();
 			this.set_side(wide_page_default());
 			window.matchMedia(NARROW).addEventListener("change", () => this.set_side(wide_page_default()));

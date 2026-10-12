@@ -103,3 +103,26 @@ test("the floating button opens Ask Data on a record, with that record as contex
 	await drawer.locator(".sf-ask-input").press("Enter");
 	await expect(drawer.locator(".sf-ask-answer").last().locator(".sf-ask-kpi")).toBeVisible();
 });
+
+test("a chat downloads as a PDF under the chosen name, with or without the questions", async ({ page }) => {
+	await openAskData(page);
+	await ask(page, q("Print me"));
+	await expect(lastAnswer(page).locator(".sf-ask-kpi")).toBeVisible();
+	await ask(page, "Encounters by department");
+	await expect(lastAnswer(page).locator(".sf-ask-title")).toContainText("(fake)");
+
+	const row = page.locator(".sf-ask-thread-row", { hasText: q("Print me") });
+	await row.hover();
+	await row.locator(".sf-ask-thread-print").click();
+	const dialog = page.getByRole("dialog").filter({ hasText: "Include questions" });
+	await dialog.locator('input[data-fieldname="filename"]').fill("Ward report");
+	await dialog.locator('input[data-fieldname="include_questions"]').uncheck();
+	const [download] = await Promise.all([
+		page.waitForEvent("download"),
+		dialog.getByRole("button", { name: "Download PDF" }).click(),
+	]);
+	expect(download.suggestedFilename()).toBe("Ward report.pdf");
+	const stream = await download.createReadStream();
+	const head = await new Promise<string>((resolve) => stream.once("data", (chunk) => resolve(String(chunk).slice(0, 4))));
+	expect(head).toBe("%PDF");
+});

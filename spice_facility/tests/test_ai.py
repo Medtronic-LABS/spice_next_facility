@@ -410,6 +410,149 @@ class TestHistoryNeverLeaks(AITestCase):
 		self.assertEqual(frappe.db.count("SPICE AI Query Log", {"thread": theirs}), 1)
 
 
+class TestChatPdf(AITestCase):
+	"""Download a chat as a PDF of its answers, with or without the questions."""
+
+	def _chat(self, user=None, rows=3, hidden=0):
+		chat = frappe.generate_hash(length=16)
+		table = {"columns": [{"label": "Name", "field": "name", "type": "Data"}],
+		         "rows": [{"name": f"R{i}"} for i in range(rows)]}
+		answer = {"mode": "data", "title": "Encounters", "text": "Seen in [[Patient Encounter:SF-TEST-ENC-1]].",
+		          "kind": "list", "table": table, "rows_read": rows,
+		          "sources": [{"doctype": "Patient Encounter", "name": "SF-TEST-ENC-1", "label": "Morning visit"}]}
+		for question, status in (("Which encounters?", "Answered"), ("Broken one", "Failed")):
+			frappe.get_doc({"doctype": "SPICE AI Query Log", "user": user or frappe.session.user, "thread": chat,
+			                "question": question, "status": status, "provider": "Gemini", "model": "gemini-test",
+			                "hidden": hidden, "answer_json": json.dumps(answer)}).insert(ignore_permissions=True)
+		return chat
+
+	def _export(self, chat, **kwargs):
+		from spice_facility.api import talk_to_data as api
+
+		rendered = {}
+
+		def fake_pdf(html, options=None):
+			rendered["html"] = html
+			return b"%PDF-1.4 fake"
+
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
+		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"), patch("frappe.utils.pdf.get_pdf", fake_pdf):
+			api.export_thread_pdf(chat, **kwargs)
+		return rendered["html"], frappe.local.response
+
+	def test_safe_filename(self):
+		from spice_facility.api.talk_to_data import safe_filename
+
+		self.assertEqual(safe_filename("../../etc/passwd"), "etcpasswd.pdf")
+		self.assertEqual(safe_filename('Ward "A"\nreport'), "Ward A report.pdf")
+		self.assertEqual(safe_filename("Ward report.PDF"), "Ward report.PDF")
+		self.assertEqual(safe_filename("   "), "ask-data.pdf")
+		self.assertTrue(len(safe_filename("x" * 300)) <= 84)
+		self.assertEqual(safe_filename("ওয়ার্ড রিপোর্ট"), "ask-data.pdf")  # non-Latin: Frappe's download header can't carry it
+
+	def test_answers_with_or_without_questions_and_links_as_plain_labels(self):
+		chat = self._chat()
+		html, response = self._export(chat, include_questions=1, filename="Ward report")
+		self.assertIn("Which encounters?", html)
+		self.assertNotIn("Broken one", html)  # only answered questions
+		self.assertIn("Morning visit", html)
+		self.assertNotIn("[[", html)
+		self.assertEqual((response["filename"], response["type"]), ("Ward report.pdf", "download"))
+		html, _response = self._export(chat, include_questions=0)
+		self.assertNotIn("Which encounters?", html)
+		self.assertIn("Encounters", html)
+
+	def test_long_tables_are_capped(self):
+		from spice_facility.api.talk_to_data import PDF_MAX_ROWS
+
+		html, _response = self._export(self._chat(rows=PDF_MAX_ROWS + 5))
+		self.assertIn(f"R{PDF_MAX_ROWS - 1}<", html)
+		self.assertNotIn(f"R{PDF_MAX_ROWS}<", html)
+
+	def test_a_name_that_repeats_a_question_is_not_used_when_questions_are_left_out(self):
+		chat = self._chat()
+		html, response = self._export(chat, include_questions=0, filename="Which encounters? - 13-10-2026")
+		self.assertNotIn("Which encounters?", html)
+		self.assertNotIn("Which encounters", response["filename"])
+		_html, response = self._export(chat, include_questions=0, filename="Ward report")
+		self.assertEqual(response["filename"], "Ward report.pdf")
+
+	def test_another_users_chat_or_a_deleted_chat_cannot_be_exported(self):
+		other = "sf-pdf-other@example.com"
+		if not frappe.db.exists("User", other):
+			frappe.get_doc({"doctype": "User", "email": other, "first_name": "Other", "send_welcome_email": 0}).insert(
+				ignore_permissions=True)
+		for chat in (self._chat(user=other), self._chat(hidden=1)):
+			with self.assertRaises(frappe.ValidationError):
+				self._export(chat)
+
+	def test_the_export_is_logged(self):
+		chat = self._chat()
+		before = frappe.db.count("Access Log", {"method": "Ask Data PDF"})
+		self._export(chat)
+		self.assertEqual(frappe.db.count("Access Log", {"method": "Ask Data PDF"}), before + 1)
+
+	def test_a_real_pdf_is_produced(self):
+		from spice_facility.api import talk_to_data as api
+
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
+		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"):
+			api.export_thread_pdf(self._chat(), filename="Real")
+		self.assertTrue(bytes(frappe.local.response["filecontent"]).startswith(b"%PDF"))
+
+
+class TestPdfCharts(IntegrationTestCase):
+	"""Every visual the chat draws has a printed form in the PDF."""
+
+	def test_pie_and_donut(self):
+		from spice_facility.ai import pdf_charts
+
+		svg = str(pdf_charts.pie([3, 1, 0, 2]))
+		self.assertEqual(svg.count("<path"), 3)  # the zero slice is skipped
+		self.assertIn("<circle", str(pdf_charts.pie([5], donut=False)))  # one slice is a whole disc
+		self.assertEqual(str(pdf_charts.pie([1, 1], donut=True)).count("<circle"), 1)  # the hole
+		self.assertIsNone(pdf_charts.pie([0, 0]))
+
+	def test_line_and_columns_escape_labels_and_round_the_axis(self):
+		from spice_facility.ai import pdf_charts
+
+		svg = str(pdf_charts.line(["<b>Jan</b>", "Feb"], [{"name": "A", "values": [3, 7]}]))
+		self.assertIn("&lt;b&gt;Jan", svg)
+		self.assertNotIn("<b>", svg)
+		self.assertIn("<polyline", svg)
+		self.assertIn(">10<", svg)  # 7 rounds up to an axis top of 10
+		cols = str(pdf_charts.columns(["Jan", "Feb"], [{"name": "A", "values": [1, 2]}, {"name": "B", "values": [2, 0]}]))
+		self.assertEqual(cols.count("<rect"), 4)
+		self.assertIsNone(pdf_charts.line([], []))
+
+	def test_each_answer_kind_gets_the_visual_the_chat_shows(self):
+		from spice_facility.api.talk_to_data import _pdf_visual
+
+		table = {"columns": [{"label": "Status", "field": "label", "type": "Data"},
+		                     {"label": "Count", "field": "value", "type": "Float"}],
+		         "rows": [{"label": "Open", "value": 3}, {"label": "Closed", "value": 1}]}
+		chart = {"labels": ["Open", "Closed"], "datasets": [{"name": "Count", "values": [3, 1]}]}
+		pie = _pdf_visual({"kind": "groups", "chart": {**chart, "type": "pie"}, "table": table})
+		self.assertEqual(pie["kind"], "pie")
+		self.assertEqual([i["share"] for i in pie["legend"]], ["75.0%", "25.0%"])
+		self.assertEqual(_pdf_visual({"kind": "groups", "chart": {**chart, "type": "donut"}, "table": table})["kind"], "pie")
+		self.assertEqual(_pdf_visual({"kind": "groups", "chart": {**chart, "type": "bar"}, "table": table})["kind"], "bars")
+
+		series = {"labels": ["2026-08", "2026-09", "2026-10"], "datasets": [{"name": "Count", "values": [1, 4, 2]}]}
+		series_table = {"columns": [{"label": "Period", "field": "label", "type": "Data"},
+		                            {"label": "Count", "field": "s0", "type": "Float"}],
+		                "rows": [{"label": p, "s0": v} for p, v in zip(series["labels"], [1, 4, 2], strict=True)]}
+		line = _pdf_visual({"kind": "series", "chart": {**series, "type": "line"}, "table": series_table})
+		self.assertEqual(line["kind"], "chart")
+		self.assertIn("<polyline", str(line["svg"]))
+		self.assertEqual(len(line["table"]["rows"]), 3)  # values print under the chart
+		cols = _pdf_visual({"kind": "series", "chart": {**series, "type": "bar"}, "table": series_table})
+		self.assertIn("<rect", str(cols["svg"]))
+		single = _pdf_visual({"kind": "series", "chart": {"labels": ["2026-10"], "datasets": [{"name": "Count", "values": [5]}],
+		                                                  "type": "line"}, "table": series_table})
+		self.assertEqual(single["kind"], "table")
+
+
 class TestSummaryBlockStates(AITestCase):
 	def test_switched_off_summaries_are_a_state_not_an_error(self):
 		from spice_facility.api import ai_summary
@@ -448,7 +591,7 @@ class TestFakeProvider(AITestCase):
 		from spice_facility.ai.providers.fake import SCRIPT, FakeProvider
 
 		fake = FakeProvider(self._providers(allow_tests=1, flag=1)[1])
-		for keyword, (dataset_name, _group, _output) in SCRIPT:
+		for keyword, (dataset_name, _group, _output, _bucket) in SCRIPT:
 			dataset = data_catalog.get(dataset_name)
 			messages = [{"role": "user", "content": f"Question: {keyword or 'anything'}"}]
 			self.assertEqual(fake.complete_json("", messages, {"properties": {"dataset": {}}})["dataset"], dataset_name)

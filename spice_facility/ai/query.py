@@ -378,8 +378,13 @@ def describe_parts(spec, dataset, scope_labels=()):
 	}
 
 
+def describe_line(d):
+	"""describe_parts() as one line ("Appointments · count of records · grouped by Department · …")."""
+	parts = [d.get("dataset"), d.get("measure"), d.get("group_by"), d.get("bucket"), *(d.get("filters") or []),
+	         d.get("period"), *(d.get("scope") or [])]
+	return " · ".join(p for p in parts if p)
+
+
 def describe(spec, dataset, scope_labels=()):
 	"""The plan in one line, for "How I got this"."""
-	d = describe_parts(spec, dataset, scope_labels)
-	parts = [d["dataset"], d["measure"], d["group_by"], d["bucket"], *d["filters"], d["period"], *d["scope"]]
-	return " · ".join(p for p in parts if p)
+	return describe_line(describe_parts(spec, dataset, scope_labels))

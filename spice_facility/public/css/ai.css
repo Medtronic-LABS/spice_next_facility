@@ -29,10 +29,13 @@
 .sf-ask-thread-item { flex: 1; min-width: 0; border: 0; background: none; padding: 6px 10px; text-align: left; font-size: var(--text-sm); color: var(--text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sf-ask-thread-row.active .sf-ask-thread-item { font-weight: 500; }
 /* delete appears on hover / keyboard focus / the open chat, like ChatGPT */
-.sf-ask-thread-del { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-right: 4px; border: 0; border-radius: 6px; background: none; color: var(--text-muted); visibility: hidden; flex: none; }
-.sf-ask-thread-row:hover .sf-ask-thread-del, .sf-ask-thread-row:focus-within .sf-ask-thread-del, .sf-ask-thread-row.active .sf-ask-thread-del { visibility: visible; }
+/* print + delete appear on hover / keyboard focus / the open chat, like ChatGPT */
+.sf-ask-thread-act { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--text-muted); visibility: hidden; flex: none; }
+.sf-ask-thread-del { margin-right: 4px; }
+.sf-ask-thread-row:hover .sf-ask-thread-act, .sf-ask-thread-row:focus-within .sf-ask-thread-act, .sf-ask-thread-row.active .sf-ask-thread-act { visibility: visible; }
+.sf-ask-thread-print:hover { color: var(--text-color); background: var(--subtle-fg); }
 .sf-ask-thread-del:hover { color: var(--red-600); background: color-mix(in srgb, var(--red-500, #ef4444) 10%, transparent); }
-.sf-ask-thread-del .icon { width: 14px; height: 14px; }
+.sf-ask-thread-act .icon { width: 14px; height: 14px; }
 .sf-ask-threads-empty { padding: 8px 10px; font-size: var(--text-sm); color: var(--text-muted); }
 .sf-ask-side .sf-ask-icon-btn .icon, .sf-ask-head-tools .icon { width: 16px; height: 16px; }
 .sf-ask-side .sf-ask-icon-btn, .sf-ask-head-tools .sf-ask-icon-btn { width: 30px; height: 30px; border: 0; background: none; box-shadow: none; }
