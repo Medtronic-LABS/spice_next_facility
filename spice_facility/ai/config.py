@@ -13,6 +13,10 @@ SETTINGS = "SPICE AI Settings"
 OLLAMA, CLAUDE, OPENAI, GEMINI = "Ollama", "Claude", "OpenAI", "Gemini"
 PROVIDER_NAMES = (OLLAMA, CLAUDE, OPENAI, GEMINI)
 LOCAL_PROVIDERS = (OLLAMA,)
+# A scripted stand-in model for end-to-end tests (ai/providers/fake.py). Never offered unless the site allows
+# tests AND explicitly asks for it; never local, so it can never read patient records.
+FAKE = "Fake"
+FAKE_FLAG = "spice_ai_fake_provider"
 MODEL_DEFAULT = "Model default"  # a Select option meaning "send nothing, let the model decide"
 # Patient check box: keep this patient's records away from cloud models (created by setup.install)
 CLOUD_OPT_OUT_FIELD = "spice_no_cloud_ai"
@@ -102,6 +106,14 @@ def _secret(settings, fieldname):
 	return settings.get_password(fieldname, raise_exception=False)
 
 
+def fake_provider_allowed() -> bool:
+	"""Both switches, so a test or dev site that merely allows tests never gets it by accident."""
+	flag = frappe.conf.get(FAKE_FLAG)
+	if flag is None:
+		flag = os.environ.get(FAKE_FLAG.upper())
+	return bool(frappe.conf.get("allow_tests")) and str(flag or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def get_config() -> AIConfig:
 	s = frappe.get_cached_doc(SETTINGS)
 	providers = {
@@ -128,6 +140,9 @@ def get_config() -> AIConfig:
 			thinking=None if (s.gemini_thinking or MODEL_DEFAULT) == MODEL_DEFAULT else s.gemini_thinking,
 		),
 	}
+	if fake_provider_allowed():
+		providers[FAKE] = ProviderConfig(name=FAKE, enabled=True, model="FAKE", base_url=None, timeout=5,
+		                                 in_chat=True, is_local=False)
 	cloud_patient_data = bool(s.cloud_patient_data_allowed)
 	summarizer = providers.get(s.summary_provider or OLLAMA)
 	summaries_possible = bool(summarizer and summarizer.enabled and (summarizer.is_local or cloud_patient_data))

@@ -410,6 +410,52 @@ class TestHistoryNeverLeaks(AITestCase):
 		self.assertEqual(frappe.db.count("SPICE AI Query Log", {"thread": theirs}), 1)
 
 
+class TestSummaryBlockStates(AITestCase):
+	def test_switched_off_summaries_are_a_state_not_an_error(self):
+		from spice_facility.api import ai_summary
+
+		patient = any_patient()
+		off = replace(ai_summary.get_config(), summary_enabled=False)
+		with patch("spice_facility.api.ai_summary.get_config", return_value=off):
+			self.assertEqual(ai_summary.get("Patient", patient.name), {"enabled": False, "reason": "off"})
+		with patch("spice_facility.api.ai_summary.user_can_use_ai", return_value=False):
+			self.assertEqual(ai_summary.get("Patient", patient.name), {"enabled": False, "reason": "access"})
+
+
+class TestFakeProvider(AITestCase):
+	"""The scripted e2e model must never appear unless a test site explicitly asks for it."""
+
+	def _providers(self, allow_tests, flag):
+		from spice_facility.ai.config import FAKE, get_config
+
+		with patch.dict(frappe.conf, {"allow_tests": allow_tests, "spice_ai_fake_provider": flag}), \
+		     patch.dict(os.environ, {}, clear=False):
+			os.environ.pop("SPICE_AI_FAKE_PROVIDER", None)
+			config = get_config()
+			return config, config.provider(FAKE)
+
+	def test_off_unless_tests_are_allowed_and_the_flag_is_set(self):
+		self.assertIsNone(self._providers(allow_tests=1, flag=None)[1])
+		self.assertIsNone(self._providers(allow_tests=0, flag=1)[1])
+		self.assertIsNone(self._providers(allow_tests=None, flag="1")[1])
+
+	def test_when_on_it_is_a_chat_model_that_is_never_local(self):
+		config, fake = self._providers(allow_tests=1, flag=1)
+		self.assertTrue(fake and fake.enabled and fake.in_chat)
+		self.assertFalse(fake.is_local)
+		self.assertIn("Fake", config.chat_providers())
+
+	def test_its_scripted_plans_are_valid_for_this_site(self):
+		from spice_facility.ai.providers.fake import SCRIPT, FakeProvider
+
+		fake = FakeProvider(self._providers(allow_tests=1, flag=1)[1])
+		for keyword, (dataset_name, _group, _output) in SCRIPT:
+			dataset = data_catalog.get(dataset_name)
+			messages = [{"role": "user", "content": f"Question: {keyword or 'anything'}"}]
+			self.assertEqual(fake.complete_json("", messages, {"properties": {"dataset": {}}})["dataset"], dataset_name)
+			query.validate(fake.complete_json("", messages, query.spec_schema(dataset)), dataset, 50)
+
+
 class TestWithoutLocalModel(AITestCase):
 	def test_answers_are_built_from_the_result_and_record_questions_stay_data(self):
 		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])

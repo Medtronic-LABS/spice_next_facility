@@ -3,14 +3,16 @@
 import frappe
 from frappe import _
 
-from spice_facility.ai.config import CLAUDE, GEMINI, OLLAMA, OPENAI, get_config
+from spice_facility.ai.config import CLAUDE, FAKE, GEMINI, OLLAMA, OPENAI, get_config
 from spice_facility.ai.providers.anthropic import ClaudeProvider
 from spice_facility.ai.providers.base import LLMProvider
+from spice_facility.ai.providers.fake import FakeProvider
 from spice_facility.ai.providers.gemini import GeminiProvider
 from spice_facility.ai.providers.ollama import OllamaProvider
 from spice_facility.ai.providers.openai import OpenAIProvider
 
-CLASSES = {OLLAMA: OllamaProvider, CLAUDE: ClaudeProvider, OPENAI: OpenAIProvider, GEMINI: GeminiProvider}
+CLASSES = {OLLAMA: OllamaProvider, CLAUDE: ClaudeProvider, OPENAI: OpenAIProvider, GEMINI: GeminiProvider,
+           FAKE: FakeProvider}  # Fake is only ever configured on a test site (config.fake_provider_allowed)
 
 
 class NoLocalProvider(frappe.ValidationError):

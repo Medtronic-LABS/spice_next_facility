@@ -15,7 +15,7 @@ from frappe import _
 from frappe.utils import add_to_date, now_datetime
 
 from spice_facility.ai import prompts
-from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD, ensure_ai_access, get_config
+from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD, ensure_ai_access, get_config, user_can_use_ai
 from spice_facility.ai.providers.base import AIProviderError
 from spice_facility.ai.providers.registry import NoSummaryProvider, summary_provider
 from spice_facility.ai.summary_context import (
@@ -65,6 +65,12 @@ def _payload(row, current_hash=None):
 
 @frappe.whitelist()
 def get(doctype: str, name: str) -> dict:
+	# Every form with the summary block calls this on load: a site without summaries, or a user without AI
+	# access, is a normal state to render, not an error (an exception would pop a dialog on each form).
+	if not user_can_use_ai():
+		return {"enabled": False, "reason": "access"}
+	if not get_config().summary_enabled:
+		return {"enabled": False, "reason": "off"}
 	_check(doctype, name)
 	current = context_hash(build_context(frappe.get_doc(doctype, name)))
 	return {"ready": _payload(_latest(doctype, name, ["Ready"]), current),
