@@ -79,8 +79,7 @@ frappe.provide("spice_facility.ai");
 				? `<div class="sf-ai-progress"><span class="sf-ai-spinner"></span>${H.esc(data.pending?.status === "Queued" ? S.queued : S.generating)}</div>` : "";
 			const failed = !pending && data.last_failed && (!data.ready || data.last_failed.generated_on > data.ready.generated_on)
 				? `<div class="sf-banner sf-red">${H.esc(S.failed)} ${H.esc(data.last_failed.error || "")}</div>` : "";
-			// The section above already says "AI summary": the action sits in the card's header (or beside the
-			// empty/progress line), never on a row of its own.
+			// The action sits in the card's header (or beside the empty/progress line), never on a row of its own.
 			host.innerHTML = data.ready
 				? `${progress}${failed}${render_summary(data.ready, S, H, button)}`
 				: `<div class="sf-ai-empty">${progress || `<span class="sf-muted">${H.esc(S.none)}</span>`}${button}</div>${failed}`;
