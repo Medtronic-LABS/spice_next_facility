@@ -51,12 +51,12 @@ def chat_provider(name=None) -> LLMProvider:
 
 
 def local_provider() -> LLMProvider:
-	"""The provider allowed to read patient data: always the local one."""
+	"""The provider Ask Data lets read patient data: an enabled local one, whatever writes summaries."""
 	config = get_config()
-	provider = build(config.summary_provider, config)
-	if not provider.is_local or not provider.config.enabled:
+	name = next((p.name for p in config.providers.values() if p.is_local and p.enabled), None)
+	if not name:
 		raise NoLocalProvider(_("No local AI model is configured on this server."))
-	return provider
+	return build(name, config)
 
 
 def summary_provider() -> LLMProvider:

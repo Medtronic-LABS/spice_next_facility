@@ -21,6 +21,9 @@ GEMINI_HOST_SUFFIX = ".googleapis.com"
 class SPICEAISettings(Document):
 	def validate(self):
 		summary_provider = self.summary_provider or OLLAMA
+		if self.cloud_patient_data_allowed and not (self.cloud_patient_data_agreement or "").strip():
+			frappe.throw(_("Record the data-processing agreement (or policy) that allows cloud models to read "
+			               "patient records."))
 		if summary_provider not in LOCAL_PROVIDERS and not self.cloud_patient_data_allowed:
 			frappe.throw(_("Summaries read patient records. To write them with {0}, tick \"Allow cloud models to read "
 			               "patient records\", or choose a local provider.").format(summary_provider))

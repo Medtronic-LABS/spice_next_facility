@@ -59,7 +59,7 @@ workflow manually with **rebuild_base** to rebuild it on demand.
 No local AI model runs here (`SPICE_AI_OLLAMA_ENABLED=0`): Ask Data works with Claude, OpenAI or Gemini, which
 see only the question and field names, and answers are written from the results. AI summaries are off unless a
 System Manager ticks **Allow cloud models to read patient records** and picks a cloud **Summary provider** in SPICE
-AI Settings (the record is sent without name, contact or insurance details — see the README's data policy).
+AI Settings, with the agreement it rests on (the record is pseudonymised first — see the README's data policy).
 
 ### Trying the stack locally
 

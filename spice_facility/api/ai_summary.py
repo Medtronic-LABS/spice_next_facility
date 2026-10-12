@@ -1,7 +1,7 @@
 """AI summary of a Health record, generated in a background job by the summary provider and cached.
 
-The provider is the local model unless the site allows cloud models to read patient records; a cloud model
-gets the context without direct identifiers (name, mobile, insurance).
+The provider is the local model unless the site allows cloud models to read patient records; a cloud model gets
+a pseudonymised context (see summary_context.pseudonymise), and never for a patient who opted out.
 
 `get` returns the latest cached summary (with a `stale` flag when the record's context changed since);
 `generate` queues a new one. The job publishes `spice_ai_summary` to the document's realtime room.
@@ -15,15 +15,16 @@ from frappe import _
 from frappe.utils import add_to_date, now_datetime
 
 from spice_facility.ai import prompts
-from spice_facility.ai.config import ensure_ai_access, get_config
+from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD, ensure_ai_access, get_config
 from spice_facility.ai.providers.base import AIProviderError
-from spice_facility.ai.providers.registry import summary_provider
+from spice_facility.ai.providers.registry import NoSummaryProvider, summary_provider
 from spice_facility.ai.summary_context import (
 	SUPPORTED,
 	build_context,
 	context_hash,
-	deidentify,
 	patient_names,
+	pseudonymise,
+	restore_placeholder,
 	serialise,
 )
 
@@ -87,7 +88,7 @@ def generate(doctype: str, name: str) -> dict:
 	if pending:
 		return _payload(pending)
 	enforce_rate_limit()
-	provider = summary_provider()
+	provider = provider_for(frappe.get_doc(doctype, name))
 	row = frappe.get_doc({"doctype": SUMMARY, "reference_doctype": doctype, "reference_name": name,
 	                      "status": "Queued", "requested_by": frappe.session.user,
 	                      "provider": provider.name, "model": provider.model}).insert(ignore_permissions=True)
@@ -106,14 +107,17 @@ def run(summary):
 		frappe.set_user(row.requested_by)
 		doc = frappe.get_doc(row.reference_doctype, row.reference_name)
 		context = build_context(doc)
-		provider = summary_provider()
-		patient = doc.name if doc.doctype == "Patient" else doc.get("patient")
-		sent = context if provider.is_local else deidentify(context, patient_names(patient))
+		provider = provider_for(doc)
+		# Settings may have changed since the request was queued: record where the data actually goes.
+		row.db_set({"provider": provider.name, "model": provider.model})
+		sent = context if provider.is_local else pseudonymise(context, *patient_names(doc))
 		result = provider.complete_json(
 			prompts.SUMMARY_SYSTEM,
 			[{"role": "user", "content": "Context:\n" + serialise(sent, get_config().max_context_chars)}],
 			prompts.SUMMARY_SCHEMA,
 		)
+		if not provider.is_local:
+			result = restore_placeholder(result, _("the patient"))
 		result["alerts"] = merge_alerts(context.get("abnormal") or [], result.get("alerts") or [])
 		row.db_set({"status": "Ready", "summary_json": json.dumps(result), "context_hash": context_hash(context),
 		            "duration_ms": round((time.monotonic() - started) * 1000), "error": None})
@@ -124,6 +128,16 @@ def run(summary):
 	finally:
 		frappe.set_user("Administrator")
 	_notify(row)
+
+
+def provider_for(doc):
+	"""The summary provider for this record; a cloud one is refused for a patient who opted out of cloud AI."""
+	provider = summary_provider()
+	patient = doc.name if doc.doctype == "Patient" else doc.get("patient")
+	if not provider.is_local and patient and frappe.db.get_value("Patient", patient, CLOUD_OPT_OUT_FIELD):
+		raise NoSummaryProvider(_("This patient asked to be kept out of cloud AI, and no local model writes "
+		                          "summaries on this server."))
+	return provider
 
 
 def merge_alerts(computed, from_model):

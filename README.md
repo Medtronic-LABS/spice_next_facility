@@ -58,10 +58,13 @@ fields twice, so custom-field validation is skipped for it only while that defec
   products.
   Records, results and page context go only to the local model, which writes every answer and summary —
   except that a site may tick **Allow cloud models to read patient records** (off by default) and pick
-  Claude, OpenAI or Gemini as **Summary provider**. The summary context then leaves the server without
-  identifying fields (name, mobile, insurance) and with the patient's name and record id replaced by
-  `[patient]` everywhere, notes included; clinical facts, dates, age and sex remain. Enable only under a
-  data-processing agreement with that provider. Ask Data's record questions stay local-only.
+  Claude, OpenAI or Gemini as **Summary provider**, recording the **agreement / policy reference** it rests on.
+  The summary context then leaves the server **pseudonymised** (`summary_context.pseudonymise`): identifying
+  fields dropped (name, contact, insurance, staff names); the patient's name, its parts and the record id
+  replaced by `[patient]` everywhere, notes included (Bengali/Devanagari aware); phone numbers and e-mails in
+  text masked; age in whole years (90+). Clinical facts, dates and sex remain. **Other people named in free-text
+  notes are not detected** — it is pseudonymisation, not anonymisation. A patient ticked **Keep out of cloud AI**
+  is never sent. Ask Data's record questions stay local-only.
 - **AI summary:** abnormal labs/vitals are flagged in code (`clinical_flags.py`) from each record's own
   normal ranges; a `must_mention` checklist keeps the small model on the important facts. Summaries are
   cached in `SPICE AI Summary` and marked stale when the record's data changes. Nothing is written into

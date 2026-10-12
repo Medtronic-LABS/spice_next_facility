@@ -6,7 +6,7 @@
  "issingle": 1,
  "engine": "InnoDB",
  "creation": "2026-10-09 12:00:00.000000",
- "modified": "2026-10-12 22:04:04.033785",
+ "modified": "2026-10-12 22:13:09.077168",
  "modified_by": "Administrator",
  "owner": "Administrator",
  "field_order": [
@@ -57,6 +57,7 @@
   "features_col",
   "summary_provider",
   "cloud_patient_data_allowed",
+  "cloud_patient_data_agreement",
   "chat_default_provider",
   "access_section",
   "allowed_roles",
@@ -364,7 +365,15 @@
    "fieldtype": "Check",
    "label": "Allow cloud models to read patient records",
    "default": "0",
-   "description": "Lets a cloud summary provider receive the record's clinical data (diagnoses, results, vitals, medications). Name, mobile and insurance details are removed first. Turn on only under a data-processing agreement with the provider (for Gemini, a billing-enabled project) and your patients' consent policy."
+   "description": "Lets a cloud summary provider receive the record's clinical data (diagnoses, results, vitals, medications, notes). It is pseudonymised first: name, record id, contact, insurance and staff names removed, phone numbers and e-mails masked, age in whole years. Other people named in free-text notes are not detected. Patients marked \u201cKeep out of cloud AI\u201d are never sent."
+  },
+  {
+   "fieldname": "cloud_patient_data_agreement",
+   "fieldtype": "Data",
+   "label": "Agreement / policy reference",
+   "depends_on": "cloud_patient_data_allowed",
+   "mandatory_depends_on": "cloud_patient_data_allowed",
+   "description": "The data-processing agreement or policy (and version) this rests on, e.g. \u201cGoogle Cloud DPA, 2026-10\u201d. Who changed these settings and when is kept in the document's history."
   },
   {
    "fieldname": "chat_default_provider",

@@ -14,6 +14,8 @@ OLLAMA, CLAUDE, OPENAI, GEMINI = "Ollama", "Claude", "OpenAI", "Gemini"
 PROVIDER_NAMES = (OLLAMA, CLAUDE, OPENAI, GEMINI)
 LOCAL_PROVIDERS = (OLLAMA,)
 MODEL_DEFAULT = "Model default"  # a Select option meaning "send nothing, let the model decide"
+# Patient check box: keep this patient's records away from cloud models (created by setup.install)
+CLOUD_OPT_OUT_FIELD = "spice_no_cloud_ai"
 # Settings fields of each provider start with this prefix (e.g. claude_enabled)
 PROVIDER_FIELD_PREFIX = {OLLAMA: "ollama", CLAUDE: "claude", OPENAI: "openai", GEMINI: "gemini"}
 # The settings field holding each cloud provider's API key
