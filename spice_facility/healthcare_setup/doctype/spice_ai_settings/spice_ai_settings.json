@@ -6,7 +6,7 @@
  "issingle": 1,
  "engine": "InnoDB",
  "creation": "2026-10-09 12:00:00.000000",
- "modified": "2026-10-12 16:14:25.867698",
+ "modified": "2026-10-12 16:55:49.664495",
  "modified_by": "Administrator",
  "owner": "Administrator",
  "field_order": [
@@ -276,7 +276,7 @@
    "label": "Model",
    "depends_on": "gemini_enabled",
    "description": "Type a model name, or use \u201cRefresh models\u201d to pick from what this provider offers.",
-   "default": "gemini-2.5-flash"
+   "default": "gemini-3.8-flash"
   },
   {
    "fieldname": "gemini_col",

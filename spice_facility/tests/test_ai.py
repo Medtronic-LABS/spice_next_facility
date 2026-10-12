@@ -315,6 +315,7 @@ class TestGeminiProvider(IntegrationTestCase):
 		self.assertEqual([c["role"] for c in payload["contents"]], ["user", "model"])
 		self.assertEqual(payload["generationConfig"]["responseJsonSchema"], schema)
 		self.assertEqual(payload["generationConfig"]["responseMimeType"], "application/json")
+		self.assertNotIn("temperature", payload["generationConfig"], "Gemini 3 keeps its default temperature")
 
 	def test_text_answer_skips_thought_parts(self):
 		text, call = self.call({"candidates": [{"content": {"parts": [
