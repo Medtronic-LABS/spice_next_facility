@@ -124,23 +124,28 @@ frappe.provide("spice_facility.ai.ask");
 			const S = this.S;
 			if (!this.thread_id) return;
 			const thread = this.thread_id;
-			const title = (this.threads || []).find((t) => t.thread === thread)?.title || S.title;
+			const today = frappe.datetime.str_to_user(frappe.datetime.get_today());
+			// The chat's title is its first question: offer it as the name only while questions are included.
+			const title = (this.threads || []).find((t) => t.thread === thread)?.title;
+			const with_questions = `${(title || S.title).slice(0, 60)} - ${today}`;
+			const answers_only = `${S.title} - ${today}`;
 			const dialog = new frappe.ui.Dialog({
 				title: S.download_pdf,
 				fields: [
-					{ fieldname: "filename", fieldtype: "Data", label: S.file_name, reqd: 1,
-					  default: `${title.slice(0, 60)} - ${frappe.datetime.str_to_user(frappe.datetime.get_today())}` },
-					{ fieldname: "include_questions", fieldtype: "Check", label: S.include_questions, default: 1 },
+					{ fieldname: "filename", fieldtype: "Data", label: S.file_name, reqd: 1, default: with_questions },
+					{ fieldname: "include_questions", fieldtype: "Check", label: S.include_questions, default: 1,
+					  onchange: () => {
+						const include = dialog.get_value("include_questions");
+						const name = dialog.get_value("filename");
+						if (!include && name === with_questions) dialog.set_value("filename", answers_only);
+						if (include && name === answers_only) dialog.set_value("filename", with_questions);
+					  } },
 				],
 				primary_action_label: S.download_pdf,
 				primary_action: (values) => {
-					const query = new URLSearchParams({ thread, include_questions: values.include_questions ? 1 : 0,
-					                                    filename: values.filename });
-					// a same-page link: the browser downloads the file (attachment) without opening an empty tab
-					const link = Object.assign(document.createElement("a"), { href: `/api/method/${API}.export_thread_pdf?${query}` });
-					document.body.appendChild(link);
-					link.click();
-					link.remove();
+					// POST (hidden form): the file name stays out of URLs, history and server logs
+					open_url_post(`/api/method/${API}.export_thread_pdf`,
+						{ thread, include_questions: values.include_questions ? 1 : 0, filename: values.filename });
 					dialog.hide();
 				},
 			});

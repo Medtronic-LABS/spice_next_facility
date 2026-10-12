@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import re
+import unicodedata
 
 import frappe
 from frappe import _
@@ -277,8 +278,10 @@ MAX_FILENAME = 80
 
 
 def safe_filename(name, fallback="ask-data"):
-	"""A download name a user typed, made safe: no path parts or quotes, single spaces, capped, ending in .pdf."""
-	name = FILENAME_UNSAFE.sub("", str(name or "")).replace("..", ".")
+	"""A download name a user typed, made safe: ASCII (Frappe's download header can't carry other scripts), no path
+	parts or quotes, single spaces, capped, ending in .pdf."""
+	name = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
+	name = FILENAME_UNSAFE.sub("", name).replace("..", ".")
 	name = re.sub(r"\s+", " ", name).strip(" .")[:MAX_FILENAME].strip(" .") or fallback
 	return name if name.lower().endswith(".pdf") else f"{name}.pdf"
 
@@ -304,7 +307,7 @@ def _pdf_visual(answer):
 	"""What the PDF shows under the text: ranked bars for groups, otherwise the answer's table (capped)."""
 	table = answer.get("table") or {}
 	rows, columns = table.get("rows") or [], table.get("columns") or []
-	if answer.get("kind") == "groups" and rows:
+	if answer.get("kind") == "groups" and rows and len(columns) > 1:
 		top = max((flt(r.get("value")) for r in rows), default=0) or 1
 		return {"kind": "bars", "rows": [{"label": r.get("display", r.get("label")), "value": _cell(r, columns[1]),
 		                                  "width": round(flt(r.get("value")) / top * 100, 1)} for r in rows]}
@@ -315,15 +318,17 @@ def _pdf_visual(answer):
 	        "more": _("First {0} of {1} rows").format(PDF_MAX_ROWS, len(rows)) if len(rows) > PDF_MAX_ROWS else None}
 
 
+def _names_a_question(filename, rows):
+	name = re.sub(r"(?i)\.pdf$", "", (filename or "").strip()).casefold()
+	return bool(name) and any(r.question and name.startswith(r.question.strip().casefold()) for r in rows)
+
+
 def _pdf_turn(row, include_questions):
 	answer = json.loads(row.answer_json or "{}") or {}
 	labels = {f"{r['doctype']}:{r['name']}": r.get("label") for r in answer.get("sources") or []}
 	number = answer.get("number") or ({"value": answer["total"], "label": (answer.get("source") or {}).get("dataset")}
 	                                  if answer.get("total") is not None else None)
-	src = answer.get("source") or {}
-	source = " · ".join(p for p in [src.get("dataset"), src.get("measure"), src.get("group_by"), src.get("bucket"),
-	                                *(src.get("filters") or []), src.get("period"), *(src.get("scope") or [])] if p) \
-		or answer.get("how") or ""
+	source = query.describe_line(answer.get("source") or {}) or answer.get("how") or ""
 	return {
 		"question": row.question if include_questions else None,
 		"title": answer.get("title") if answer.get("mode") == "data" else None,
@@ -339,13 +344,14 @@ def _pdf_turn(row, include_questions):
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])  # POST: the file name (often a ward or patient label) stays out of URLs and logs
 def export_thread_pdf(thread: str, include_questions: int = 1, filename: str | None = None):
 	"""One of the user's chats as a PDF of its answers (optionally with the questions), from the stored answers."""
 	from frappe.core.doctype.access_log.access_log import make_access_log
 	from frappe.utils.pdf import get_pdf
 
 	ensure_ai_access()
+	enforce_rate_limit()
 	include_questions = cint(include_questions)
 	filters = {**_thread_filters(thread), "status": "Answered"}
 	rows = frappe.get_all(LOG, filters, ["name", "question", "answer_json", "provider", "model", "creation"],
@@ -354,6 +360,8 @@ def export_thread_pdf(thread: str, include_questions: int = 1, filename: str | N
 		frappe.throw(_("This chat has no answers to download."), frappe.ValidationError)
 	rows.reverse()
 	turns = [_pdf_turn(r, include_questions) for r in rows]
+	if not include_questions and _names_a_question(filename, rows):
+		filename = None  # a name that repeats a question would put it back into the heading and the file name
 	# The heading is the name the user gave the file; otherwise the chat's first question, or, when questions are
 	# left out, the first answer's title (never a question the user chose not to include).
 	title = (re.sub(r"(?i)\.pdf$", "", (filename or "").strip())

@@ -413,7 +413,7 @@ class TestHistoryNeverLeaks(AITestCase):
 class TestChatPdf(AITestCase):
 	"""Download a chat as a PDF of its answers, with or without the questions."""
 
-	def _chat(self, user=None, rows=3):
+	def _chat(self, user=None, rows=3, hidden=0):
 		chat = frappe.generate_hash(length=16)
 		table = {"columns": [{"label": "Name", "field": "name", "type": "Data"}],
 		         "rows": [{"name": f"R{i}"} for i in range(rows)]}
@@ -423,7 +423,7 @@ class TestChatPdf(AITestCase):
 		for question, status in (("Which encounters?", "Answered"), ("Broken one", "Failed")):
 			frappe.get_doc({"doctype": "SPICE AI Query Log", "user": user or frappe.session.user, "thread": chat,
 			                "question": question, "status": status, "provider": "Gemini", "model": "gemini-test",
-			                "answer_json": json.dumps(answer)}).insert(ignore_permissions=True)
+			                "hidden": hidden, "answer_json": json.dumps(answer)}).insert(ignore_permissions=True)
 		return chat
 
 	def _export(self, chat, **kwargs):
@@ -435,7 +435,8 @@ class TestChatPdf(AITestCase):
 			rendered["html"] = html
 			return b"%PDF-1.4 fake"
 
-		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), patch("frappe.utils.pdf.get_pdf", fake_pdf):
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
+		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"), patch("frappe.utils.pdf.get_pdf", fake_pdf):
 			api.export_thread_pdf(chat, **kwargs)
 		return rendered["html"], frappe.local.response
 
@@ -447,6 +448,7 @@ class TestChatPdf(AITestCase):
 		self.assertEqual(safe_filename("Ward report.PDF"), "Ward report.PDF")
 		self.assertEqual(safe_filename("   "), "ask-data.pdf")
 		self.assertTrue(len(safe_filename("x" * 300)) <= 84)
+		self.assertEqual(safe_filename("ওয়ার্ড রিপোর্ট"), "ask-data.pdf")  # non-Latin: Frappe's download header can't carry it
 
 	def test_answers_with_or_without_questions_and_links_as_plain_labels(self):
 		chat = self._chat()
@@ -467,9 +469,24 @@ class TestChatPdf(AITestCase):
 		self.assertIn(f"R{PDF_MAX_ROWS - 1}<", html)
 		self.assertNotIn(f"R{PDF_MAX_ROWS}<", html)
 
-	def test_only_the_users_own_chat_and_the_export_is_logged(self):
-		with self.assertRaises(frappe.ValidationError):
-			self._export(self._chat(user="Guest"))
+	def test_a_name_that_repeats_a_question_is_not_used_when_questions_are_left_out(self):
+		chat = self._chat()
+		html, response = self._export(chat, include_questions=0, filename="Which encounters? - 13-10-2026")
+		self.assertNotIn("Which encounters?", html)
+		self.assertNotIn("Which encounters", response["filename"])
+		_html, response = self._export(chat, include_questions=0, filename="Ward report")
+		self.assertEqual(response["filename"], "Ward report.pdf")
+
+	def test_another_users_chat_or_a_deleted_chat_cannot_be_exported(self):
+		other = "sf-pdf-other@example.com"
+		if not frappe.db.exists("User", other):
+			frappe.get_doc({"doctype": "User", "email": other, "first_name": "Other", "send_welcome_email": 0}).insert(
+				ignore_permissions=True)
+		for chat in (self._chat(user=other), self._chat(hidden=1)):
+			with self.assertRaises(frappe.ValidationError):
+				self._export(chat)
+
+	def test_the_export_is_logged(self):
 		chat = self._chat()
 		before = frappe.db.count("Access Log", {"method": "Ask Data PDF"})
 		self._export(chat)
@@ -478,7 +495,8 @@ class TestChatPdf(AITestCase):
 	def test_a_real_pdf_is_produced(self):
 		from spice_facility.api import talk_to_data as api
 
-		with patch("spice_facility.api.talk_to_data.ensure_ai_access"):
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
+		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"):
 			api.export_thread_pdf(self._chat(), filename="Real")
 		self.assertTrue(bytes(frappe.local.response["filecontent"]).startswith(b"%PDF"))
 
