@@ -94,7 +94,8 @@ def run(log, provider=None, page=None, use_context=1, history=None):
 def get_answer(log: str) -> dict:
 	row = _own_log(log)
 	return {"log": row.name, "status": row.status, "question": row.question, "error": row.error,
-	        "answer": json.loads(row.answer_json) if row.answer_json else None}
+	        "answer": json.loads(row.answer_json) if row.answer_json else None,
+	        "asked_on": row.creation, "duration_ms": row.duration_ms}
 
 
 @frappe.whitelist()

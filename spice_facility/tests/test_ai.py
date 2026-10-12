@@ -17,6 +17,7 @@ from spice_facility.ai.providers.gemini import EMPTY_ENUM, THINKING_ALLOWANCE, G
 from spice_facility.ai.summary_context import build_context, context_hash
 from spice_facility.ai.talk_to_data import (
 	answer_data,
+	cited_records,
 	implicit_scope,
 	keep_known_links,
 	resolve_page,
@@ -134,6 +135,57 @@ class TestCatalogAndQuery(AITestCase):
 		text = keep_known_links("See [[Lab Test:LT-1]] and [[Patient:Somebody]]", {"Lab Test:LT-1"})
 		self.assertEqual(text, "See [[Lab Test:LT-1]] and Somebody")
 
+	def test_source_parts_match_the_one_line_description(self):
+		dataset = data_catalog.get("Patient Appointment")
+		spec = query.validate({**GROUP_SPEC, "group_by": "department", "date_range": {"preset": "this_month"},
+		                       "filters": [{"field": "status", "op": "=", "value": "Open"}]}, dataset, 50)
+		parts = query.describe_parts(spec, dataset, ["Patient = X (this page)"])
+		self.assertEqual((parts["doctype"], parts["aggregate"], parts["scope"]), ("Patient Appointment", "count", ["Patient = X (this page)"]))
+		self.assertEqual(len(parts["filters"]), 1)
+		self.assertTrue(parts["period_from"] and parts["period_to"])
+		self.assertEqual(query.describe(spec, dataset, ["Patient = X (this page)"]), " · ".join(
+			[parts["dataset"], parts["measure"], parts["group_by"], parts["filters"][0], parts["period"], parts["scope"][0]]))
+
+	def test_record_sources_list_the_page_and_cited_records_once(self):
+		patient = any_patient()
+		page = {"doctype": "Patient", "name": patient.name}
+		text = "Seen in [[Patient Encounter:SF-TEST-ENC-1]] and [[Patient Encounter:SF-TEST-ENC-1]]; [[Lab Test:NO-SUCH-TEST]]."
+		sources = cited_records(text, page)
+		self.assertEqual([(s["doctype"], s["name"]) for s in sources],
+		                 [("Patient", patient.name), ("Patient Encounter", "SF-TEST-ENC-1")])
+		self.assertEqual(sources[0]["label"], patient.patient_name)
+
+	def test_get_answer_returns_when_it_was_asked_and_how_long_it_took(self):
+		from spice_facility.api.talk_to_data import get_answer
+
+		log = frappe.get_doc({"doctype": "SPICE AI Query Log", "user": frappe.session.user, "question": "How many?",
+		                      "status": "Answered", "duration_ms": 1234,
+		                      "answer_json": json.dumps({"mode": "data", "text": "3"})}).insert(ignore_permissions=True)
+		data = get_answer(log.name)
+		self.assertEqual((data["duration_ms"], str(data["asked_on"])), (1234, str(log.creation)))
+
+	def test_record_sources_ignore_unknown_doctypes(self):
+		self.assertEqual(cited_records("[[No Such Doctype:No Such Doctype]]", None), [])
+
+	def test_group_total_counts_every_row_not_just_the_charted_groups(self):
+		dataset = data_catalog.get("Patient Encounter")
+		spec = query.validate(GROUP_SPEC, dataset, 1)  # keep only the top group
+		result = query.execute(spec, dataset)
+		self.assertEqual(len(result["labels"]), 1)
+		self.assertEqual(result["total"], result["rows_read"])
+		self.assertEqual(query.present(result, spec, dataset)["total"], result["rows_read"])
+
+	def test_no_total_when_the_rows_were_capped(self):
+		dataset = data_catalog.get("Patient Encounter")
+		result = query.execute(query.validate(GROUP_SPEC, dataset, 50), dataset, max_rows=1)
+		self.assertTrue(result["truncated"])
+		self.assertNotIn("total", result)
+
+	def test_record_sources_leave_out_records_the_user_cannot_read(self):
+		patient = any_patient()
+		with patch("spice_facility.ai.talk_to_data.frappe.has_permission", return_value=False):
+			self.assertEqual(cited_records("[[Patient Encounter:SF-TEST-ENC-1]]", {"doctype": "Patient", "name": patient.name}), [])
+
 
 class TestDataPolicy(AITestCase):
 	def test_cloud_planner_never_receives_patient_values(self):
@@ -160,6 +212,7 @@ class TestDataPolicy(AITestCase):
 			answer, meta = run_question("When was the last HbA1c?", "Claude", {"doctype": "Patient", "name": patient.name})
 		self.assertEqual(meta["mode"], "Record")
 		self.assertEqual(answer["text"], "Last HbA1c was 8.2%.")
+		self.assertEqual(answer["sources"][0]["name"], patient.name)
 		self.assertNotIn(patient.patient_name, " ".join(cloud.sent))
 
 
@@ -172,6 +225,7 @@ class TestWithoutLocalModel(AITestCase):
 		self.assertIsNone(answer["narrator"])
 		self.assertTrue(answer["text"])
 		self.assertIn("chart", answer)
+		self.assertEqual(answer["source"]["doctype"], "Patient Encounter")
 
 	def test_summaries_switch_off_without_a_local_model(self):
 		from spice_facility.ai.config import get_config

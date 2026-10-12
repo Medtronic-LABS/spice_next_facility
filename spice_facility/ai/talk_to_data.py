@@ -34,10 +34,21 @@ SERIES_WORDS = re.compile(r"\b(per|by|each|every|over)\s+(day|week|month|quarter
 MODE_SCHEMA = {"type": "object", "properties": {"mode": {"type": "string", "enum": ["record", "data"]}},
                "required": ["mode"]}
 NARRATE_ROWS = 50
+MAX_CITED = 20
 HISTORY_TURNS = 2
 
 
 # ─── page context ───────────────────────────────────────────────────────────
+
+
+def record_label(doctype, name):
+	"""A record's title for display, or its name when the title field is missing or field-level restricted."""
+	meta = frappe.get_meta(doctype)
+	title_field = meta.get_title_field()
+	field = meta.get_field(title_field) if title_field and title_field != "name" else None
+	if not field or field.permlevel:
+		return name
+	return frappe.db.get_value(doctype, name, title_field) or name
 
 
 def resolve_page(page):
@@ -48,9 +59,7 @@ def resolve_page(page):
 	if name:
 		if not frappe.db.exists(doctype, name) or not frappe.has_permission(doctype, "read", doc=name):
 			return None
-		title_field = frappe.get_meta(doctype).get_title_field()
-		label = frappe.db.get_value(doctype, name, title_field) if title_field else name
-		return {"doctype": doctype, "name": name, "label": label or name, "kind": "form"}
+		return {"doctype": doctype, "name": name, "label": record_label(doctype, name), "kind": "form"}
 	if not frappe.has_permission(doctype, "read"):
 		return None
 	filters = page.get("filters") if isinstance(page.get("filters"), list) else []
@@ -68,8 +77,7 @@ def implicit_scope(dataset, page):
 	# a record that belongs to a patient scopes patient-level datasets to that patient
 	patient = frappe.db.get_value(doctype, name, "patient") if frappe.get_meta(doctype).has_field("patient") else None
 	if patient and "Patient" in dataset["scopes"]:
-		patient_name = frappe.db.get_value("Patient", patient, "patient_name")
-		return {dataset["scopes"]["Patient"]: patient}, [_("Patient = {0} (this page)").format(patient_name or patient)]
+		return {dataset["scopes"]["Patient"]: patient}, [_("Patient = {0} (this page)").format(record_label("Patient", patient))]
 	return {}, []
 
 
@@ -85,6 +93,22 @@ def list_scope(dataset, page):
 
 
 # ─── links ──────────────────────────────────────────────────────────────────
+
+
+def cited_records(text, page):
+	"""The records an answer rests on, for its Sources panel: the open record, then each one the text links to.
+
+	Only records the user may read are listed; the text already names them, so nothing new is revealed."""
+	refs = ([(page["doctype"], page["name"])] if page and page.get("name") else []) + [
+		(m.group(1).strip(), m.group(2).strip()) for m in LINK_TOKEN.finditer(text or "")]
+	sources, seen = [], set()
+	for doctype, name in refs[:MAX_CITED]:
+		if (doctype, name) in seen or not frappe.db.exists("DocType", doctype) or not frappe.db.exists(doctype, name) \
+				or not frappe.has_permission(doctype, "read", doc=name):
+			continue
+		seen.add((doctype, name))
+		sources.append({"doctype": doctype, "name": name, "label": record_label(doctype, name)})
+	return sources
 
 
 def keep_known_links(text, allowed):
@@ -116,8 +140,8 @@ def answer_record(question, page):
 	local = local_provider()
 	text = local.complete_text(prompts.RECORD_QA_SYSTEM, [{"role": "user", "content":
 	                           f"Context:\n{serialise(context, get_config().max_context_chars)}\n\nQuestion: {question}"}])
-	return {"mode": "record", "text": keep_known_links(text, record_refs(context) | {f"{doc.doctype}:{doc.name}"}),
-	        "narrator": local.model}
+	text = keep_known_links(text, record_refs(context) | {f"{doc.doctype}:{doc.name}"})
+	return {"mode": "record", "text": text, "narrator": local.model, "sources": cited_records(text, page)}
 
 
 def plan(question, provider, history, page, datasets):
@@ -156,12 +180,13 @@ def answer_data(question, provider, history, page, use_context):
 		scope_labels += labels
 	result = query.execute(spec, dataset, scope, config.max_rows)
 	shown = query.present(result, spec, dataset)
+	source = query.describe_parts(spec, dataset, scope_labels)
 
 	preview = shown.get("table", {}).get("rows", [])[:NARRATE_ROWS] if "table" in shown else []
 	if not has_local_provider():
 		return {"mode": "data", "text": plain_summary(shown, spec, dataset, result["rows_read"]),
 		        "title": spec["title"] or dataset["label"], "dataset": dataset["doctype"], "spec": spec,
-		        "how": query.describe(spec, dataset, scope_labels), "scope": scope_labels,
+		        "how": query.describe(spec, dataset, scope_labels), "source": source, "scope": scope_labels,
 		        "rows_read": result["rows_read"], "truncated": result["truncated"], "narrator": None, **shown}
 	local = local_provider()
 	measure_type = dataset["fields"].get(spec["measure"]["field"], {}).get("type") or frappe.get_meta(
@@ -174,7 +199,7 @@ def answer_data(question, provider, history, page, use_context):
 	allowed = {f"{dataset['doctype']}:{r['name']}" for r in preview if isinstance(r, dict) and r.get("name")}
 	return {
 		"mode": "data", "text": keep_known_links(text, allowed), "title": spec["title"] or dataset["label"],
-		"dataset": dataset["doctype"], "spec": spec, "how": query.describe(spec, dataset, scope_labels),
+		"dataset": dataset["doctype"], "spec": spec, "how": query.describe(spec, dataset, scope_labels), "source": source,
 		"scope": scope_labels, "rows_read": result["rows_read"], "truncated": result["truncated"],
 		"narrator": local.model, **shown,
 	}
