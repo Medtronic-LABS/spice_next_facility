@@ -6,7 +6,7 @@
  "issingle": 1,
  "engine": "InnoDB",
  "creation": "2026-10-09 12:00:00.000000",
- "modified": "2026-10-12 16:55:49.664495",
+ "modified": "2026-10-12 21:06:52.784450",
  "modified_by": "Administrator",
  "owner": "Administrator",
  "field_order": [
@@ -46,6 +46,7 @@
   "gemini_col",
   "gemini_base_url",
   "gemini_timeout",
+  "gemini_thinking",
   "gemini_in_chat",
   "gemini_status",
   "features_tab",
@@ -295,6 +296,15 @@
    "label": "Timeout (seconds)",
    "default": "60",
    "depends_on": "gemini_enabled"
+  },
+  {
+   "fieldname": "gemini_thinking",
+   "fieldtype": "Select",
+   "label": "Thinking",
+   "options": "Minimal\nLow\nMedium\nHigh\nModel default",
+   "default": "Low",
+   "depends_on": "gemini_enabled",
+   "description": "How much the model reasons before answering. Low is fast and enough for planning queries; Minimal is fastest (Flash models only). Use Model default for Gemini 2.x."
   },
   {
    "fieldname": "gemini_in_chat",

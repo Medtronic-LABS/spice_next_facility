@@ -22,6 +22,10 @@ class GeminiProvider(LLMProvider):
 	def _generate(self, system, messages, max_tokens, schema=None):
 		# No temperature: Gemini 3 models are tuned for their default (1.0) and can loop at low values.
 		generation = {"maxOutputTokens": max_tokens + THINKING_ALLOWANCE}
+		if self.config.thinking:
+			# Choosing a dataset and filling a query form need little reasoning; Gemini 3 thinks "high" by default,
+			# which costs seconds per call.
+			generation["thinkingConfig"] = {"thinkingLevel": self.config.thinking.lower()}
 		if schema is not None:
 			generation.update({"responseMimeType": "application/json", "responseJsonSchema": _encode_empty(schema)})
 		payload = {
