@@ -14,8 +14,8 @@
    screens. `sf-side-open` on .sf-ask is the shown state (ask_data_view.js). */
 .sf-ask-side { display: none; flex-direction: column; gap: 2px; min-width: 0; }
 .sf-ask.sf-side-open .sf-ask-side { display: flex; }
-.sf-ask-page.sf-side-open { grid-template-columns: 250px minmax(0, 1fr); }
-.sf-ask-page.sf-side-open .sf-ask-side { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow-y: auto; padding-right: 4px; }
+.sf-ask-page.sf-side-open { grid-template-columns: 250px minmax(0, 1fr); column-gap: clamp(16px, 2vw, 28px); }
+.sf-ask-page.sf-side-open .sf-ask-side { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow-y: auto; padding-right: 12px; border-right: 1px solid var(--border-color); }
 .sf-ask-drawer.sf-side-open .sf-ask-main { display: none; }
 /* the header's own toggle + new chat only while the list is hidden */
 .sf-ask-head-tools { display: flex; gap: 4px; }
@@ -39,11 +39,12 @@
 .sf-ask-side .sf-ask-icon-btn:hover, .sf-ask-head-tools .sf-ask-icon-btn:hover { background: var(--subtle-fg); color: var(--text-color); }
 @media (max-width: 860px) {
 	.sf-ask-page.sf-side-open { grid-template-columns: minmax(0, 1fr); }
-	.sf-ask-page.sf-side-open .sf-ask-side { position: static; max-height: none; }
+	.sf-ask-page.sf-side-open .sf-ask-side { position: static; max-height: none; padding-right: 0; border-right: 0; }
 	.sf-ask-page.sf-side-open .sf-ask-main { display: none; }
 }
 
-.sf-ask-page { max-width: 1280px; margin: 0 auto; padding: 8px 0 24px; }
+/* side gutters so the chat never touches the desk sidebar or the window edge */
+.sf-ask-page { max-width: 1280px; margin: 0 auto; padding: 8px clamp(12px, 2.5vw, 32px) 24px; }
 .sf-ask-head { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .sf-ask-context { flex: 1; min-width: 0; }
 .sf-ask-head .icon { width: 14px; height: 14px; }

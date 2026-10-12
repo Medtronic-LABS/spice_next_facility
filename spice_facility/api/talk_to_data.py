@@ -7,7 +7,9 @@ import re
 
 import frappe
 from frappe import _
+from frappe.utils import now_datetime
 from frappe.utils.background_jobs import get_job
+from rq.exceptions import InvalidJobOperation, NoSuchJobError
 
 from spice_facility.ai import data_catalog, query
 from spice_facility.ai.config import ensure_ai_access, get_config
@@ -24,7 +26,6 @@ IN_FLIGHT = ("Queued", "Running")
 THREAD_ID = re.compile(r"^[A-Za-z0-9]{10,32}$")
 MAX_THREADS = 50
 MAX_THREAD_TURNS = 50
-MAX_THREAD_DELETE = 500
 THREAD_SCAN = 500  # recent questions scanned to build the chat list
 STOPPED = "Stopped"
 
@@ -69,7 +70,12 @@ def ask(question: str, provider: str | None = None, page: str | None = None, use
 		frappe.throw(_("Please type a question."), frappe.ValidationError)
 	enforce_rate_limit()
 	page = json.loads(page) if isinstance(page, str) and page else (page or None)
-	thread = thread if thread and THREAD_ID.match(thread) else frappe.generate_hash(length=16)
+	if thread and THREAD_ID.match(thread):
+		# A chat from before threads existed is keyed by its one question's log name: that question joins the thread.
+		frappe.db.set_value(LOG, {"name": thread, "user": frappe.session.user, "thread": ["is", "not set"]},
+		                    "thread", thread, update_modified=False)
+	else:
+		thread = frappe.generate_hash(length=16)
 	log = frappe.get_doc({"doctype": LOG, "user": frappe.session.user, "thread": thread, "question": question, "status": "Queued",
 	                      "provider": provider or get_config().chat_default_provider,
 	                      "context_doctype": (page or {}).get("doctype") if use_context else None,
@@ -84,31 +90,36 @@ def _job_id(log):
 	return f"spice-ai-ask::{log}"
 
 
-def _stopped(log):
-	return frappe.db.get_value(LOG, log, "status") == STOPPED
+def _set_if(log, statuses, values):
+	"""Compare-and-set: write `values` only while the log's status is one of `statuses`.
+
+	stop() (web request) and run() (worker) race on the same row; the condition in the UPDATE means neither can
+	overwrite the other's outcome (a stopped question never becomes Answered, an answered one never Stopped)."""
+	table = frappe.qb.DocType(LOG)
+	update = frappe.qb.update(table).set(table.modified, now_datetime())
+	for field, value in values.items():
+		update = update.set(table[field], value)
+	update.where((table.name == log) & table.status.isin(list(statuses))).run()
 
 
 def run(log, provider=None, page=None, use_context=1, history=None):
 	row = frappe.get_doc(LOG, log)
-	if row.status == STOPPED:
-		return
-	row.db_set("status", "Running")
+	_set_if(log, ("Queued",), {"status": "Running"})
+	# Commit before the model call: no row lock is held while it runs, and stop() sees "Running".
+	frappe.db.commit()
+	if frappe.db.get_value(LOG, log, "status") != "Running":
+		return  # stopped before it started
 	try:
 		frappe.set_user(row.user)
 		answer, meta = run_question(row.question, provider, page, bool(use_context),
 		                            json.loads(history) if isinstance(history, str) and history else history)
-		if _stopped(log):
-			# The user stopped this question while the model was working: keep the log as Stopped, drop the answer.
-			return
-		row.db_set({"status": "Answered", "answer_json": json.dumps(answer, default=str),
-		            "spec": json.dumps(answer.get("spec")) if answer.get("spec") else None, **meta})
+		_set_if(log, ("Running",), {"status": "Answered", "answer_json": json.dumps(answer, default=str),
+		                            "spec": json.dumps(answer.get("spec")) if answer.get("spec") else None, **meta})
 	except (AIProviderError, query.QueryValidationError, frappe.ValidationError, frappe.PermissionError) as error:
-		if not _stopped(log):
-			row.db_set({"status": "Failed", "error": str(error)[:500]})
-	except Exception as error:  # noqa: BLE001 — keep the chat responsive; full trace goes to the Error Log
+		_set_if(log, ("Running",), {"status": "Failed", "error": str(error)[:500]})
+	except Exception:  # noqa: BLE001 — keep the chat responsive; full trace goes to the Error Log
 		frappe.log_error(title="SPICE Ask Data failed", message=frappe.get_traceback())
-		if not _stopped(log):
-			row.db_set({"status": "Failed", "error": _("Unexpected error; see Error Log.")})
+		_set_if(log, ("Running",), {"status": "Failed", "error": _("Unexpected error; see Error Log.")})
 	finally:
 		frappe.set_user("Administrator")
 	frappe.publish_realtime(EVENT, {"log": log, "status": frappe.db.get_value(LOG, log, "status")},
@@ -143,18 +154,19 @@ def thread(thread: str) -> list:
 	"""The turns of one of the user's conversations, oldest first."""
 	ensure_ai_access()
 	fields = ["name", "status", "question", "error", "answer_json", "creation", "duration_ms"]
-	return [_turn(r) for r in frappe.get_all(LOG, _thread_filters(thread), fields, order_by="creation asc",
-	                                         limit=MAX_THREAD_TURNS)]
+	# the newest turns when a chat is longer than the cap (they carry the context for a follow-up), oldest first
+	rows = frappe.get_all(LOG, _thread_filters(thread), fields, order_by="creation desc", limit=MAX_THREAD_TURNS)
+	return [_turn(r) for r in reversed(rows)]
 
 
 @frappe.whitelist(methods=["POST"])
 def delete_thread(thread: str) -> dict:
 	"""Remove one of the user's chats from their list. The questions stay in the query log (audit, rate limits)."""
 	ensure_ai_access()
-	names = frappe.get_all(LOG, _thread_filters(thread), pluck="name", limit=MAX_THREAD_DELETE)
-	for name in names:
-		frappe.db.set_value(LOG, name, "hidden", 1, update_modified=False)
-	return {"thread": thread, "deleted": len(names)}
+	filters = _thread_filters(thread)
+	count = frappe.db.count(LOG, filters)
+	frappe.db.set_value(LOG, filters, "hidden", 1, update_modified=False)
+	return {"thread": thread, "deleted": count}
 
 
 def _thread_filters(thread):
@@ -175,9 +187,12 @@ def stop(log: str) -> dict:
 	if row.status not in IN_FLIGHT:
 		return {"log": row.name, "status": row.status}
 	if row.status == "Queued" and (job := get_job(_job_id(row.name))):
-		job.cancel()
-	row.db_set("status", STOPPED)
-	return {"log": row.name, "status": STOPPED}
+		try:
+			job.cancel()
+		except (InvalidJobOperation, NoSuchJobError):
+			pass  # already cancelled by a concurrent stop, or already picked up: run() will see Stopped
+	_set_if(row.name, IN_FLIGHT, {"status": STOPPED})
+	return {"log": row.name, "status": frappe.db.get_value(LOG, row.name, "status")}
 
 
 @frappe.whitelist()

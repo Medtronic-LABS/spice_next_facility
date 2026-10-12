@@ -190,7 +190,8 @@ class TestCatalogAndQuery(AITestCase):
 
 		log = self._query_log("Queued")
 		self.assertEqual(api.stop(log.name)["status"], "Stopped")
-		with patch("spice_facility.api.talk_to_data.run_question", side_effect=AssertionError("must not run")):
+		with patch("spice_facility.api.talk_to_data.run_question", side_effect=AssertionError("must not run")), \
+		     patch.object(frappe.db, "commit"):  # run() commits in a worker; keep the test's transaction
 			api.run(log.name)
 		self.assertEqual(frappe.db.get_value("SPICE AI Query Log", log.name, "status"), "Stopped")
 
@@ -203,7 +204,8 @@ class TestCatalogAndQuery(AITestCase):
 			frappe.db.set_value("SPICE AI Query Log", log.name, "status", "Stopped")
 			return {"mode": "data", "text": "3"}, {"mode": "Data"}
 
-		with patch("spice_facility.api.talk_to_data.run_question", side_effect=answer_then_find_it_stopped):
+		with patch("spice_facility.api.talk_to_data.run_question", side_effect=answer_then_find_it_stopped), \
+		     patch.object(frappe.db, "commit"):
 			api.run(log.name)
 		row = frappe.db.get_value("SPICE AI Query Log", log.name, ["status", "answer_json"], as_dict=True)
 		self.assertEqual((row.status, row.answer_json), ("Stopped", None))
@@ -250,6 +252,29 @@ class TestCatalogAndQuery(AITestCase):
 
 		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), self.assertRaises(frappe.ValidationError):
 			api.thread("x' or '1'='1")
+
+	def test_a_second_stop_of_an_already_cancelled_job_is_fine(self):
+		from rq.exceptions import InvalidJobOperation
+
+		from spice_facility.api import talk_to_data as api
+
+		log = self._query_log("Queued")
+		job = MagicMock()
+		job.cancel.side_effect = InvalidJobOperation("already cancelled")
+		with patch("spice_facility.api.talk_to_data.get_job", return_value=job):
+			self.assertEqual(api.stop(log.name)["status"], "Stopped")
+
+	def test_a_follow_up_in_a_chat_from_before_threads_keeps_its_first_question(self):
+		from spice_facility.api import talk_to_data as api
+
+		old = self._query_log("Answered")  # no thread: its chat key is its own name
+		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
+		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"), \
+		     patch("spice_facility.api.talk_to_data.frappe.enqueue"):
+			self.assertEqual(api.ask("And per month?", thread=old.name)["thread"], old.name)
+			self.assertEqual([t["question"] for t in api.thread(old.name)], ["How many?", "And per month?"])
+			self.assertEqual(api.delete_thread(old.name)["deleted"], 2)
+			self.assertNotIn(old.name, {t["thread"] for t in api.threads()})
 
 	def test_stop_leaves_a_finished_question_alone(self):
 		from spice_facility.api import talk_to_data as api
