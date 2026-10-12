@@ -77,8 +77,6 @@ FORMS = {
 		html("sf_ai_summary", "SF AI Summary", ""),
 		html("sf_patient_header", "SF Patient Header", ""),
 		html("sf_vitals_trend", "SF Vitals Trend", ""),
-		chart("sf_chart_visits", "SF Patient Encounters per Month", "Encounters per month", "Patient Encounter",
-		      "patient", based_on="encounter_date", filters=SUBMITTED),
 		table("sf_tbl_upcoming", "Upcoming appointments", "Patient Appointment", "patient",
 		      [col("appointment_date", "Date", "Date"), col("appointment_time", "Time", "Time"),
 		       col("practitioner_name", "Practitioner"), col("appointment_type", "Type", "Link"), col("status", "Status", "Select")],
