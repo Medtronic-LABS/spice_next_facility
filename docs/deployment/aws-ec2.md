@@ -17,7 +17,13 @@ Each EC2 instance runs three containers (`deploy/docker-compose.yml`):
 |---|---|---|
 | `caddy` | HTTPS entry point (Let's Encrypt, auto-renewed) | 80, 443 |
 | `app` | all-in-one image: gunicorn, socket.io, workers (incl. a dedicated AI `long` worker), scheduler, Redis, daily backup | 127.0.0.1:8000 only |
-| `mariadb` | MariaDB 10.6, data on the instance's EBS volume | not exposed |
+| `mariadb` | MariaDB 10.6 | not exposed |
+
+**Data lives on its own EBS volume**, mounted at `DATA_DIR` (default `/srv/spice-data`): the database in
+`mariadb/` and Frappe's `sites/` (site config, uploaded files, local backups) in `sites/`. The root disk holds
+only the OS, Docker images and Caddy's certificates, so it can fill up or be replaced without touching data,
+and the data volume can be snapshotted, resized or moved to a new instance on its own. `deploy.sh` refuses to
+start the stack if `DATA_DIR` is not a mounted volume, and Docker will not start at boot without it.
 
 The pipeline (`.github/workflows/docker-publish.yml`) **runs the test suite inside the exact image against
 MariaDB** before publishing it to `ghcr.io/medtronic-labs/spice_next_facility`, then deploys it over SSH
@@ -70,34 +76,40 @@ the SSH deploy. Settings live in `deploy/.env.local` (gitignored, written on fir
 Do this **once per environment** (dev and training each get their own instance, DNS record and secrets).
 
 1. **EC2 instance** — Ubuntu 24.04 LTS, `t3.xlarge` (4 vCPU / 16 GB) recommended for ERPNext + Health +
-   MariaDB on one host (`t3.large` / 8 GB works for a small pilot). **EBS gp3, 60 GB** or more.
-2. **Elastic IP** attached to the instance (the DNS record and `DEPLOY_HOST` must not change).
-3. **Security group**
+   MariaDB on one host (`t3.large` / 8 GB works for a small pilot). Root disk **gp3, 30 GB** (OS + images).
+   A Nitro instance type (t3, t3a, m5, m6i, …): the data volume is found by its id as an NVMe device.
+2. **Data volume** — a separate **EBS gp3** volume (20 GB is plenty for dev; size training/production for
+   the database plus attachments), encrypted, in the **same availability zone** as the instance, attached to it
+   (any device name). Put its id in the `DATA_VOLUME_ID` variable. The first deploy formats it (only if it
+   is completely blank — a volume with any filesystem or partition table is never formatted) and mounts it
+   at `DATA_DIR` through `/etc/fstab`. Snapshot this volume (see Operations).
+3. **Elastic IP** attached to the instance (the DNS record and `DEPLOY_HOST` must not change).
+4. **Security group**
    - 80, 443 from `0.0.0.0/0` (Caddy).
    - 22 from GitHub Actions runners (deploy) and your admin IPs. GitHub-hosted runners have no fixed IP
      range you can allowlist cheaply; either accept 22 open with **key-only auth** (password auth is off
      on Ubuntu EC2 images) or use a self-hosted runner / switch the deploy to SSM later.
-4. **S3 bucket** for backups (e.g. `spice-facility-backups-<env>`), versioning on, a lifecycle rule to
+5. **S3 bucket** for backups (e.g. `spice-facility-backups-<env>`), versioning on, a lifecycle rule to
    expire old objects, public access blocked.
-5. **IAM role** attached to the instance with `s3:PutObject`, `s3:ListBucket` on that bucket. The backup
+6. **IAM role** attached to the instance with `s3:PutObject`, `s3:ListBucket` on that bucket. The backup
    job uses it through the instance metadata service — no AWS keys are stored anywhere. Containers sit on
    a Docker bridge, so set the metadata hop limit to 2:
    `aws ec2 modify-instance-metadata-options --instance-id <id> --http-put-response-hop-limit 2 --http-tokens required`
-6. **DNS**: an `A` record per environment → that instance's Elastic IP:
+7. **DNS**: an `A` record per environment → that instance's Elastic IP:
    `spice-next-facility-dev.labsplatform.com` (dev) and `spice-facility-training.labsplatform.com` (training).
    Caddy needs it, plus ports 80/443 open, to obtain the Let's Encrypt certificate.
 
 ## 2. Prepare the instance (once)
 
 Nothing to install by hand on Ubuntu: every deploy runs `deploy/prepare-host.sh` on the host first. It
-installs Docker + the compose plugin from Ubuntu's archive (`docker.io`, `docker-compose-v2`), adds the deploy
+mounts the data volume at `DATA_DIR` (and makes Docker wait for it at boot), installs Docker + the compose plugin from Ubuntu's archive (`docker.io`, `docker-compose-v2`), adds the deploy
 user to the `docker` group and creates a 4 GB swap file if the host has none; on a ready host it changes
 nothing. This needs passwordless `sudo` for the deploy user (the default on EC2's `ubuntu` user). Without it,
 or on a non-Ubuntu host, run the same script yourself once as a user who can sudo:
 
 ```bash
 scp deploy/prepare-host.sh ubuntu@<elastic-ip>:~
-ssh ubuntu@<elastic-ip> 'bash prepare-host.sh'
+ssh ubuntu@<elastic-ip> 'DATA_DIR=/srv/spice-data DATA_VOLUME_ID=vol-… bash prepare-host.sh'
 ```
 
 Create a **deploy key pair** for GitHub (`ssh-keygen -t ed25519 -f deploy_key -N ""`), append
@@ -124,14 +136,14 @@ Each may deploy only from its own branch (deployment branch policy: `dev` ← `d
 | `DEPLOY_PORT` | optional, default 22 |
 | `ADMIN_PASSWORD` | Administrator password (used when the site is first created) |
 | `DB_ROOT_PASSWORD` | MariaDB root password (long, random; never reused): `openssl rand -base64 32 \| tr -d '\n'` |
-
-Both passwords must be 12+ characters from `A-Z a-z 0-9 . _ ~ + = @ % , : / -` (the deploy job checks this
-before touching the host); no secret may contain a quote or newline.
 | `BACKUP_S3_BUCKET` | backup bucket name (empty = backups stay on the instance) |
 | `ALERT_WEBHOOK_URL` | optional Slack/Teams webhook for backup failures |
 | `SPICE_AI_ANTHROPIC_API_KEY` | optional Claude key for Ask Data |
 | `SPICE_AI_OPENAI_API_KEY` | optional OpenAI key for Ask Data |
 | `GHCR_PULL_USER`, `GHCR_PULL_TOKEN` | if the GHCR package is private: a user and a PAT with `read:packages` |
+
+Both passwords must be 12+ characters from `A-Z a-z 0-9 . _ ~ + = @ % , : / -` (the deploy job checks this
+before touching the host); no secret may contain a quote or newline.
 
 **Variables**
 
@@ -142,6 +154,8 @@ before touching the host); no secret may contain a quote or newline.
 | `SITE_URL` (link shown on the deploy) | `https://spice-next-facility-dev.labsplatform.com` | `https://spice-facility-training.labsplatform.com` |
 | `DEPLOY_PATH` | `/home/ubuntu/spice_next_facility` |
 | `AWS_DEFAULT_REGION` | `ap-south-1` |
+| `DATA_VOLUME_ID` | that environment's data volume, e.g. `vol-0123456789abcdef0` (needed until it is mounted) |
+| `DATA_DIR` | optional, default `/srv/spice-data` |
 
 The image is pushed with the workflow's own `GITHUB_TOKEN` (`packages: write`) — no registry secret needed
 for publishing.
@@ -153,7 +167,7 @@ Push to `develop` (dev) or `training` (training), or run the workflow manually o
 1. checks the environment's secrets and that the image was built and attested by this branch,
 2. copies `docker-compose.yml`, `Caddyfile`, `deploy.sh` and a freshly written `.env` (CI-owned; do not edit
    it on the host) to `DEPLOY_PATH` over SSH with the pinned host key,
-   then runs `prepare-host.sh` (installs Docker and swap if missing),
+   then runs `prepare-host.sh` (mounts the data volume, installs Docker and swap if missing),
 3. runs `deploy.sh`: pull the `sha-<commit>@sha256:…` image → `docker compose up -d` → wait for
    `/api/method/ping` (a first deploy creates the site and installs ERPNext, Health, frappe_theme and
    spice_facility — allow ~10 minutes) → on failure, roll back to the last healthy tag.
@@ -188,7 +202,7 @@ docker exec -it spice-next-facility supervisorctl status
 docker exec -it -u frappe spice-next-facility bash -lc 'cd ~/frappe-bench && bench --site "$SITE_NAME" migrate'
 ```
 
-**Backups**: daily `bench backup --with-files` into the `sites` volume, synced to
+**Backups**: daily `bench backup --with-files` into `DATA_DIR/sites/<site>/private/backups`, synced to
 `s3://<BACKUP_S3_BUCKET>/<SITE_NAME>/`, local copies kept `BACKUP_RETENTION_DAYS` (7). Restore:
 
 ```bash
@@ -200,7 +214,9 @@ docker exec -it -u frappe spice-next-facility bash -lc 'cd ~/frappe-bench && \
   --db-root-password "$DB_ROOT_PASSWORD"'
 ```
 
-Also enable **EBS snapshots** (AWS Data Lifecycle Manager, daily) as a second, whole-volume safety net.
+Also enable **EBS snapshots of the data volume** (AWS Data Lifecycle Manager, daily) as a second,
+whole-volume safety net. To move the data to a new instance: stop the stack, detach the volume, attach it to the
+new instance, set `DATA_VOLUME_ID` if it changed and deploy — an existing filesystem is mounted, never formatted.
 
 ## Next steps when this outgrows one host
 

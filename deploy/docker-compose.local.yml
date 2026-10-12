@@ -1,14 +1,25 @@
 # Local trial of the production stack (deploy/local-test.sh layers this on docker-compose.yml): the same
 # images, Caddyfile and site setup as EC2, on spare loopback-only ports (a dev bench usually holds 8000; the
-# local Administrator password is not secret) and plain HTTP.
+# local Administrator password is not secret) and plain HTTP. Data stays in Docker volumes instead of the
+# EC2 data volume, so `down` (-v) gives a fresh site.
 services:
+  mariadb:
+    volumes: !override
+      - mariadb-data:/var/lib/mysql
+
   app:
     container_name: spice-next-facility-local
     env_file: !override
       - .env.local
     ports: !override
       - "127.0.0.1:${LOCAL_APP_PORT:-18000}:8000"
+    volumes: !override
+      - sites:/home/frappe/frappe-bench/sites
 
   caddy:
     ports: !override
       - "127.0.0.1:${LOCAL_PORT:-8088}:80"
+
+volumes:
+  mariadb-data:
+  sites:

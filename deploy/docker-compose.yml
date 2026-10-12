@@ -3,7 +3,11 @@
 #
 #   caddy   :80/:443  public entry point; automatic HTTPS for ${DOMAIN}
 #   app     all-in-one image (gunicorn, socketio, workers, scheduler, Redis, daily backup)
-#   mariadb MariaDB 10.6, data on the instance's EBS volume
+#   mariadb MariaDB 10.6
+#
+# The database and sites/ (site config, uploaded files, backups) are bind mounts under DATA_DIR, a separate
+# EBS volume mounted by prepare-host.sh; deploy.sh refuses to start if it is not mounted. Code ships in the
+# image, so the root disk holds only the OS, Docker images and Caddy's certificates.
 #
 # The app and MariaDB publish nothing on the host's public interfaces; only Caddy does.
 
@@ -27,7 +31,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD must be set}
     volumes:
-      - mariadb-data:/var/lib/mysql
+      - ${DATA_DIR:-/srv/spice-data}/mariadb:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -53,7 +57,7 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       # Site config, scoped DB credentials, uploaded files and local backups. Code ships in the image.
-      - sites:/home/frappe/frappe-bench/sites
+      - ${DATA_DIR:-/srv/spice-data}/sites:/home/frappe/frappe-bench/sites
     healthcheck:
       test: ["CMD", "curl", "-sf", "-H", "Host: ${SITE_NAME}", "http://localhost:8000/api/method/ping"]
       interval: 15s
@@ -81,8 +85,6 @@ services:
     networks: [backend]
 
 volumes:
-  mariadb-data:
-  sites:
   caddy-data:
   caddy-config:
 
