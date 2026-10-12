@@ -20,21 +20,38 @@ frappe.provide("spice_facility.ai");
 		return H.link(doctype, rest.join(":"), "↗");
 	}
 
-	function render_summary(r, S, H) {
+	// Compare findings with alerts on their leading words: the model often restates an alert as a finding.
+	const gist = (text) => (text || "").split(" — ")[0].toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 24);
+
+	function render_summary(r, S, H, actions) {
 		const s = r.summary || {};
-		const alerts = (s.alerts || []).map((a) => `<div class="sf-ai-alert sf-${SEVERITY_TONE[a.severity] || "orange"}">
-			${H.esc(a.text)} ${source_link(a.record, H)}${a.origin === "ai" ? ' <span class="sf-muted">· AI</span>' : ""}</div>`).join("");
-		const findings = (s.key_findings || []).map((f) => `<li>${H.esc(f.text)}</li>`).join("");
+		const alert_list = s.alerts || [];
+		const alerted = new Set(alert_list.map((a) => gist(a.text)));
+		const alerts = alert_list.map((a) => {
+			const [what, ...where] = (a.text || "").split(" — ");
+			return `<li class="sf-ai-alert sf-${SEVERITY_TONE[a.severity] || "orange"}">
+				<span class="sf-ai-alert-text">${H.esc(what)}</span>
+				<span class="sf-ai-alert-source">${H.esc(where.join(" — "))} ${source_link(a.record, H)}${a.origin === "ai" ? " · AI" : ""}</span>
+			</li>`;
+		}).join("");
+		const findings = (s.key_findings || []).filter((f) => !alerted.has(gist(f.text)))
+			.map((f) => `<li>${H.esc(f.text)}</li>`).join("");
 		const follow = (s.follow_up || []).map((f) => `<li>${H.esc(f)}</li>`).join("");
+		const side = `${findings ? H.section(S.key_findings, `<ul class="sf-list">${findings}</ul>`) : ""}
+			${follow ? H.section(S.follow_up, `<ul class="sf-list">${follow}</ul>`) : ""}`;
 		return `
 			<div class="sf-ai-card">
-				<div class="sf-ai-headline">✨ ${H.esc(s.headline || "")}</div>
-				${r.stale ? `<div class="sf-banner sf-orange">${H.esc(S.stale)}</div>` : ""}
+				<div class="sf-ai-head">
+					<div class="sf-ai-headline">✨ ${H.esc(s.headline || "")}</div>
+					<div class="sf-ai-head-actions">
+						${r.stale ? `<span class="sf-ai-pill" title="${H.esc(S.stale)}">${H.esc(S.stale_short)}</span>` : ""}
+						${actions}
+					</div>
+				</div>
 				<p class="sf-ai-text">${H.esc(s.summary || "")}</p>
-				${alerts ? H.section(S.alerts, alerts) : ""}
-				<div class="sf-grid-3">
-					${findings ? H.section(S.key_findings, `<ul class="sf-list">${findings}</ul>`) : ""}
-					${follow ? H.section(S.follow_up, `<ul class="sf-list">${follow}</ul>`) : ""}
+				<div class="sf-ai-cols ${alerts && side.trim() ? "" : "sf-ai-single"}">
+					${alerts ? H.section(S.alerts, `<ul class="sf-ai-alerts">${alerts}</ul>`) : ""}
+					${side.trim() ? `<div>${side}</div>` : ""}
 				</div>
 				<div class="sf-muted sf-ai-footer">${H.esc(S.footer(r.model, frappe.datetime.prettyDate(r.generated_on)))}</div>
 			</div>`;
@@ -62,10 +79,11 @@ frappe.provide("spice_facility.ai");
 				? `<div class="sf-ai-progress"><span class="sf-ai-spinner"></span>${H.esc(data.pending?.status === "Queued" ? S.queued : S.generating)}</div>` : "";
 			const failed = !pending && data.last_failed && (!data.ready || data.last_failed.generated_on > data.ready.generated_on)
 				? `<div class="sf-banner sf-red">${H.esc(S.failed)} ${H.esc(data.last_failed.error || "")}</div>` : "";
-			const body = data.ready ? render_summary(data.ready, S, H) : (pending ? "" : H.empty(S.none));
-			// The section above already says "AI summary"; the block only adds its action.
-			host.innerHTML = `<div class="sf-ai-actions">${button}</div>
-				${progress}${failed}${body}`;
+			// The section above already says "AI summary": the action sits in the card's header (or beside the
+			// empty/progress line), never on a row of its own.
+			host.innerHTML = data.ready
+				? `${progress}${failed}${render_summary(data.ready, S, H, button)}`
+				: `<div class="sf-ai-empty">${progress || `<span class="sf-muted">${H.esc(S.none)}</span>`}${button}</div>${failed}`;
 			host.querySelector(".sf-ai-generate")?.addEventListener("click", async () => {
 				try {
 					await frappe.xcall(`${METHOD}.generate`, { doctype: frm.doctype, name: frm.doc.name });

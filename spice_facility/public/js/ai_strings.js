@@ -26,6 +26,7 @@ spice_facility.ai.strings = {
 		queued: __("Queued…"),
 		none: __("No AI summary yet for this record."),
 		stale: __("Out of date — the record changed since this summary"),
+		stale_short: __("Out of date"),
 		failed: __("The summary could not be generated."),
 		key_findings: __("Key findings"),
 		alerts: __("Alerts"),
