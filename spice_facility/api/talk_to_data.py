@@ -14,6 +14,7 @@ from rq.exceptions import InvalidJobOperation, NoSuchJobError
 from spice_facility.ai import data_catalog, query
 from spice_facility.ai.config import ensure_ai_access, get_config
 from spice_facility.ai.providers.base import AIProviderError
+from spice_facility.ai.providers.registry import chat_provider
 from spice_facility.ai.talk_to_data import run_question
 from spice_facility.api.ai_summary import enforce_rate_limit
 
@@ -69,6 +70,7 @@ def ask(question: str, provider: str | None = None, page: str | None = None, use
 	if not question:
 		frappe.throw(_("Please type a question."), frappe.ValidationError)
 	enforce_rate_limit()
+	chosen = chat_provider(provider)  # validated now, and logged with the question even if it is stopped or fails
 	page = json.loads(page) if isinstance(page, str) and page else (page or None)
 	if thread and THREAD_ID.match(thread):
 		# A chat from before threads existed is keyed by its one question's log name: that question joins the thread.
@@ -77,10 +79,10 @@ def ask(question: str, provider: str | None = None, page: str | None = None, use
 	else:
 		thread = frappe.generate_hash(length=16)
 	log = frappe.get_doc({"doctype": LOG, "user": frappe.session.user, "thread": thread, "question": question, "status": "Queued",
-	                      "provider": provider or get_config().chat_default_provider,
+	                      "provider": chosen.name, "model": chosen.model,
 	                      "context_doctype": (page or {}).get("doctype") if use_context else None,
 	                      "context_name": (page or {}).get("name") if use_context else None}).insert(ignore_permissions=True)
-	frappe.enqueue("spice_facility.api.talk_to_data.run", queue="long", timeout=600, log=log.name, provider=provider,
+	frappe.enqueue("spice_facility.api.talk_to_data.run", queue="long", timeout=600, log=log.name, provider=chosen.name,
 	               page=page, use_context=int(use_context), history=history, job_id=_job_id(log.name),
 	               enqueue_after_commit=True)
 	return {"log": log.name, "status": "Queued", "thread": thread}
@@ -129,7 +131,7 @@ def run(log, provider=None, page=None, use_context=1, history=None):
 def _turn(row):
 	return {"log": row.name, "status": row.status, "question": row.question, "error": row.error,
 	        "answer": json.loads(row.answer_json) if row.answer_json else None,
-	        "asked_on": row.creation, "duration_ms": row.duration_ms}
+	        "asked_on": row.creation, "duration_ms": row.duration_ms, "provider": row.provider, "model": row.model}
 
 
 @frappe.whitelist()
@@ -153,7 +155,7 @@ def threads() -> list:
 def thread(thread: str) -> list:
 	"""The turns of one of the user's conversations, oldest first."""
 	ensure_ai_access()
-	fields = ["name", "status", "question", "error", "answer_json", "creation", "duration_ms"]
+	fields = ["name", "status", "question", "error", "answer_json", "creation", "duration_ms", "provider", "model"]
 	# the newest turns when a chat is longer than the cap (they carry the context for a follow-up), oldest first
 	rows = frappe.get_all(LOG, _thread_filters(thread), fields, order_by="creation desc", limit=MAX_THREAD_TURNS)
 	return [_turn(r) for r in reversed(rows)]

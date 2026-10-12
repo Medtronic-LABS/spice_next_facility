@@ -244,7 +244,8 @@ frappe.provide("spice_facility.ai");
 					: await this.wait(log, (status) =>
 						$answer.find(".sf-ask-pending-text").text(status === "Queued" ? this.S.queued : this.S.thinking), pending);
 				const turn = { question, log, status: result.status, error: result.error, answer: result.answer,
-				               asked_on: result.asked_on, duration_ms: result.duration_ms };
+				               asked_on: result.asked_on, duration_ms: result.duration_ms,
+				               provider: result.provider, model: result.model };
 				this.history.push(turn);
 				this.load_threads();
 				$answer.replaceWith(this.answer_html(turn));
@@ -346,7 +347,7 @@ frappe.provide("spice_facility.ai");
 			const rows = a.table?.rows || [];
 			const empty_result = a.mode === "data" && !a.number && !rows.length ? `<div class="sf-muted">${esc(S.empty)}</div>` : "";
 			return `<div class="sf-ask-answer">
-				${this.card_head(a)}
+				${this.card_head(a, turn)}
 				${this.sources_panel(turn)}
 				${figure ? `<div class="sf-ask-kpi"><span class="sf-ask-kpi-value">${fmt(figure.value, "Float")}</span>
 					<span class="sf-ask-kpi-label">${esc(figure.label)}</span></div>` : ""}
@@ -358,7 +359,19 @@ frappe.provide("spice_facility.ai");
 			</div>`;
 		}
 
-		card_head(a) {
+		// The model the user picked for this question (as logged), shown on every answer, including reopened chats.
+		model_tag(turn) {
+			const a = turn.answer || {};
+			const provider = turn.provider || a.provider;
+			const model = turn.model || a.planner;
+			if (!model) return "";
+			const local = a.planner_is_local ?? this.settings.providers.find((p) => p.name === provider)?.is_local;
+			const label = this.S.answered_with(provider || "", model);
+			return `<span class="sf-ask-model ${local ? "sf-local" : "sf-cloud"}" title="${esc(label)}" aria-label="${esc(label)}">
+				${icon(local ? "server" : "cloud")}<span>${esc(model)}</span></span>`;
+		}
+
+		card_head(a, turn) {
 			const S = this.S;
 			const actions = a.mode === "data" ? [
 				a.list_route && `<a class="dropdown-item sf-act-list">${icon("list")} ${esc(S.open_list)}</a>`,
@@ -372,6 +385,7 @@ frappe.provide("spice_facility.ai");
 			const title = a.mode === "data" && a.title;
 			return `<div class="sf-ask-card-head ${title ? "" : "sf-bare"}">
 				${title ? `<div class="sf-ask-title"><span class="sf-ask-spark">${icon("sparkles")}</span>${esc(a.title)}</div>` : ""}
+				${this.model_tag(turn)}
 				<button class="btn btn-xs btn-default sf-ask-icon-btn sf-ask-src" title="${esc(S.sources_hint)}" aria-label="${esc(S.sources)}">${icon("info")}</button>
 				${menu}
 			</div>`;

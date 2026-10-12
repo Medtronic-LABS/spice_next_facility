@@ -97,6 +97,7 @@ spice_facility.ai.strings = {
 		asked: __("Asked"),
 		took: (seconds) => __("took {0} s", [seconds]),
 		technical: __("Technical details"),
+		answered_with: (provider, model) => __("Answered with {0} · {1}", [provider, model]),
 		examples: {
 			default: [
 				__("How many appointments per department this month?"),

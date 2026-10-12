@@ -270,9 +270,13 @@ class TestCatalogAndQuery(AITestCase):
 		old = self._query_log("Answered")  # no thread: its chat key is its own name
 		with patch("spice_facility.api.talk_to_data.ensure_ai_access"), \
 		     patch("spice_facility.api.talk_to_data.enforce_rate_limit"), \
+		     patch("spice_facility.api.talk_to_data.chat_provider", return_value=FakeProvider("Gemini", False)), \
 		     patch("spice_facility.api.talk_to_data.frappe.enqueue"):
 			self.assertEqual(api.ask("And per month?", thread=old.name)["thread"], old.name)
-			self.assertEqual([t["question"] for t in api.thread(old.name)], ["How many?", "And per month?"])
+			turns = api.thread(old.name)
+			self.assertEqual([t["question"] for t in turns], ["How many?", "And per month?"])
+			# the chosen model is logged when the question is asked, and comes back with the chat
+			self.assertEqual((turns[1]["provider"], turns[1]["model"]), ("Gemini", "Gemini-test"))
 			self.assertEqual(api.delete_thread(old.name)["deleted"], 2)
 			self.assertNotIn(old.name, {t["thread"] for t in api.threads()})
 
