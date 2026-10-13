@@ -21,12 +21,13 @@ from frappe import _
 from frappe.utils import nowdate
 
 from spice_facility.ai import data_catalog, prompts, query
-from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD, LOCAL_PROVIDERS, get_config
+from spice_facility.ai.config import LOCAL_PROVIDERS, get_config
 from spice_facility.ai.providers.registry import chat_provider, has_local_provider, local_provider
 from spice_facility.ai.summary_context import IDENTIFYING_KEYS
 from spice_facility.ai.summary_context import SUPPORTED as RECORD_DOCTYPES
 from spice_facility.ai.summary_context import (
 	build_context,
+	kept_out_of_cloud,
 	patient_names,
 	pseudonymise,
 	record_refs,
@@ -85,9 +86,6 @@ def implicit_scope(dataset, page):
 	if not page or page["kind"] != "form":
 		return {}, []
 	doctype, name = page["doctype"], page["name"]
-	if dataset["doctype"] == doctype:
-		# asked about the open record's own kind of data (e.g. Patient from a patient): that one record
-		return {"name": name}, [_("{0} = {1} (this page)").format(_(doctype), page["label"])]
 	field = dataset["scopes"].get(doctype)
 	if field:
 		return {field: name}, [_("{0} = {1} (this page)").format(dataset["fields"].get(field, {}).get("label", field), page["label"])]
@@ -95,6 +93,10 @@ def implicit_scope(dataset, page):
 	patient = frappe.db.get_value(doctype, name, "patient") if frappe.get_meta(doctype).has_field("patient") else None
 	if patient and "Patient" in dataset["scopes"]:
 		return {dataset["scopes"]["Patient"]: patient}, [_("Patient = {0} (this page)").format(record_label("Patient", patient))]
+	if dataset["doctype"] == doctype:
+		# the open record's own kind of data with nothing above to tie it (e.g. Patient asked from a patient):
+		# that one record. A record that belongs to a patient was scoped to the patient just above.
+		return {"name": name}, [_("{0} = {1} (this page)").format(_(doctype), page["label"])]
 	return {}, []
 
 
@@ -139,40 +141,59 @@ def keep_known_links(text, allowed):
 # ─── pipeline ───────────────────────────────────────────────────────────────
 
 
-def record_reader(page, provider):
-	"""The model that may read the open record to answer about it, or None.
+# Why no model may read the open record (shown on the answer card)
+NO_RECORD_MODEL, OTHER_MODEL, OPTED_OUT = "no_model", "other_model", "opted_out"
 
-	The local model; otherwise the chosen cloud model, only with the site's consent to cloud models reading patient
-	records (SPICE AI Settings, as for summaries) and never for a patient who opted out of cloud AI."""
+
+def record_reader(page, provider):
+	"""(model, None) for the model that may read the open record to answer about it, or (None, reason).
+
+	The local model; otherwise the cloud model the site's consent names (SPICE AI Settings: cloud patient data allowed,
+	with the agreement for its summary provider) when that is the model chosen, and never for a patient who opted
+	out of cloud AI."""
 	if not page or page["kind"] != "form" or page["doctype"] not in RECORD_DOCTYPES:
-		return None
+		return None, None
 	if has_local_provider():
-		return local_provider()
-	if provider.is_local or not get_config().cloud_patient_data:
-		return None
-	patient = page["name"] if page["doctype"] == "Patient" else frappe.db.get_value(page["doctype"], page["name"], "patient")
-	if patient and frappe.db.get_value("Patient", patient, CLOUD_OPT_OUT_FIELD):
-		return None
-	return provider
+		return local_provider(), None
+	config = get_config()
+	if not config.cloud_patient_data:
+		return None, NO_RECORD_MODEL
+	if provider.is_local or provider.name != config.summary_provider:
+		return None, OTHER_MODEL  # the agreement covers the summary provider, not any cloud model
+	if kept_out_of_cloud(frappe.get_doc(page["doctype"], page["name"])):
+		return None, OPTED_OUT
+	return provider, None
 
 
 def choose_mode(question, page, use_context, provider, reader):
 	if not use_context or not reader:
 		# no model may read this record: the question is answered from the data
 		return "data"
+	if not reader.is_local:
+		question = _cloud_question(question, page)
 	system = (f"The user is looking at one {page['doctype']} record. Decide if the question is about THAT record "
 	          "(its details, history, results, summary) -> record, or asks for counts, trends or lists across "
 	          "many records (even if limited to this record's related data) -> data.")
 	return provider.complete_json(system, [{"role": "user", "content": question}], MODE_SCHEMA).get("mode", "data")
 
 
+def _cloud_question(question, page):
+	"""The question as a cloud model reading this record may see it: the patient's names and contacts replaced like
+	the record's, or a name in the question would undo the record's pseudonymisation."""
+	doc = frappe.get_doc(page["doctype"], page["name"])
+	return pseudonymise({"question": question}, *patient_names(doc))["question"]
+
+
 def answer_record(question, page, reader):
 	doc = frappe.get_doc(page["doctype"], page["name"])
 	context = build_context(doc)
-	# a cloud reader gets the record pseudonymised, as cloud summaries do
-	sent = context if reader.is_local else pseudonymise(context, *patient_names(doc))
+	# a cloud reader gets the record, and the question, pseudonymised, as cloud summaries are
+	if not reader.is_local:
+		context_sent, question = pseudonymise(context, *patient_names(doc)), _cloud_question(question, page)
+	else:
+		context_sent = context
 	text = reader.complete_text(prompts.RECORD_QA_SYSTEM, [{"role": "user", "content":
-	                            f"Context:\n{serialise(sent, get_config().max_context_chars)}\n\nQuestion: {question}"}])
+	                            f"Context:\n{serialise(context_sent, get_config().max_context_chars)}\n\nQuestion: {question}"}])
 	if not reader.is_local:
 		text = restore_placeholder(text, _("the patient"))
 	text = keep_known_links(text, record_refs(context) | {f"{doc.doctype}:{doc.name}"})
@@ -306,13 +327,12 @@ def run_question(question, provider_name=None, page=None, use_context=True, hist
 	provider = chat_provider(provider_name)
 	page = resolve_page(page) if use_context else None
 	started = time.monotonic()
-	reader = record_reader(page, provider) if use_context else None
+	reader, no_reader_reason = record_reader(page, provider) if use_context else (None, None)
 	mode = choose_mode(question, page, use_context, provider, reader)
 	answer = answer_record(question, page, reader) if mode == "record" else answer_data(question, provider, history, page, use_context)
 	answer.update({"provider": provider.name, "planner": provider.model, "planner_is_local": provider.is_local,
 	               "page": page,
-	               # asked from a record that has record answers, but no model may read it: say so on the card
-	               "record_fallback": bool(page and page["kind"] == "form" and page["doctype"] in RECORD_DOCTYPES
-	                                       and mode == "data" and not reader)})
+	               # asked from a record that has record answers, but no model may read it: why, for the card
+	               "record_fallback": no_reader_reason if mode == "data" else None})
 	return answer, {"mode": mode.title(), "duration_ms": round((time.monotonic() - started) * 1000),
 	                "row_count": answer.get("rows_read") or 0, "provider": provider.name, "model": provider.model}

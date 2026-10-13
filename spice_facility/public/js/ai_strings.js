@@ -100,7 +100,12 @@ spice_facility.ai.strings = {
 		asked: __("Asked"),
 		took: (seconds) => __("took {0} s", [seconds]),
 		technical: __("Technical details"),
-		record_fallback: __("Answered from the data, not by reading this record: no AI model here may read patient records (an on-server model, or a cloud model the site has allowed)."),
+		// why a question about the open record was answered from the data (talk_to_data.record_reader)
+		record_fallback: {
+			no_model: __("Answered from the data, not by reading this record: no AI model here may read patient records."),
+			other_model: __("Answered from the data, not by reading this record: only the cloud model this site's agreement covers may read patient records. Choose it to ask about this record."),
+			opted_out: __("Answered from the data, not by reading this record: this patient asked to be kept out of cloud AI."),
+		},
 		record_answer_cloud: (model) => __("Answered by {0} (cloud) from this record, with the patient's name and contact details replaced first; allowed by this site's consent setting.", [model]),
 		answered_with: (provider, model) => __("Answered with {0} · {1}", [provider, model]),
 		examples: {

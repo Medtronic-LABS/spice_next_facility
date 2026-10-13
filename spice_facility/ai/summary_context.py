@@ -14,6 +14,7 @@ import frappe
 from frappe import _
 
 from spice_facility.ai.clinical_flags import flags_for, vital_trends
+from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD
 from spice_facility.api import form_summary as fs
 
 LAB_HISTORY = 5
@@ -175,6 +176,17 @@ WORD_CHARS = r"\w\u0300-\u036f\u0900-\u0dff\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 PHONE = re.compile(r"(?<![\d-])\+?\d(?:[ -]?\d){9,13}(?![\d-])")  # 10-14 digits, spaces/dashes allowed
 DATE_LIKE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?")
+
+
+def patient_of(doc):
+	"""The Patient a record belongs to (the record itself for a Patient); None for e.g. an unregistered arrival."""
+	return doc.name if doc.doctype == "Patient" else doc.get("patient")
+
+
+def kept_out_of_cloud(doc):
+	"""Whether this record's patient asked to be kept out of cloud AI (summaries and record questions alike)."""
+	patient = patient_of(doc)
+	return bool(patient and frappe.db.get_value("Patient", patient, CLOUD_OPT_OUT_FIELD))
 
 
 def patient_names(doc):

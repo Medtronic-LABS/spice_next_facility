@@ -15,10 +15,11 @@ from frappe import _
 from frappe.utils import add_to_date, now_datetime
 
 from spice_facility.ai import prompts
-from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD, ensure_ai_access, get_config, user_can_use_ai
+from spice_facility.ai.config import ensure_ai_access, get_config, user_can_use_ai
 from spice_facility.ai.providers.base import AIProviderError
 from spice_facility.ai.providers.registry import NoSummaryProvider, summary_provider
 from spice_facility.ai.summary_context import (
+	kept_out_of_cloud,
 	SUPPORTED,
 	build_context,
 	context_hash,
@@ -139,8 +140,7 @@ def run(summary):
 def provider_for(doc):
 	"""The summary provider for this record; a cloud one is refused for a patient who opted out of cloud AI."""
 	provider = summary_provider()
-	patient = doc.name if doc.doctype == "Patient" else doc.get("patient")
-	if not provider.is_local and patient and frappe.db.get_value("Patient", patient, CLOUD_OPT_OUT_FIELD):
+	if not provider.is_local and kept_out_of_cloud(doc):
 		raise NoSummaryProvider(_("This patient asked to be kept out of cloud AI, and no local model writes "
 		                          "summaries on this server."))
 	return provider

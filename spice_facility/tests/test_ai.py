@@ -609,51 +609,68 @@ class TestFakeProvider(AITestCase):
 
 
 class TestCloudRecordAnswers(AITestCase):
-	"""Without a local model, a record question may go to the chosen cloud model only with the site's consent,
-	pseudonymised, and never for a patient who opted out."""
+	"""Without a local model, a record question may go to a cloud model only with the site's consent, only to the
+	cloud model that consent's agreement covers (the summary provider), pseudonymised (record AND question), and
+	never for a patient who opted out."""
 
-	def _ask(self, consent, opted_out=0):
-		from spice_facility.ai import talk_to_data
+	MOBILE = "9876501234"
+
+	def setUp(self):
 		from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD
 
-		patient = any_patient()
-		if frappe.get_meta("Patient").has_field(CLOUD_OPT_OUT_FIELD):
-			frappe.db.set_value("Patient", patient.name, CLOUD_OPT_OUT_FIELD, opted_out)
-		# the mode is only asked when some model may read the record; otherwise it goes straight to planning
-		mode = [{"mode": "record"}] if consent and not opted_out else []
-		cloud = FakeProvider("Gemini", False, json_answers=[*mode, {"dataset": "Patient"},
-		                                                     {**GROUP_SPEC, "group_by": "", "output": "list",
-		                                                      "list_fields": ["patient_name"]}],
+		self.assertTrue(frappe.get_meta("Patient").has_field(CLOUD_OPT_OUT_FIELD), "created by setup.install")
+		self.patient = any_patient()
+		frappe.db.set_value("Patient", self.patient.name, {"mobile": self.MOBILE, CLOUD_OPT_OUT_FIELD: 0})
+
+	def _ask(self, question, page, consent=True, chosen="Gemini", summary_provider="Gemini", reads_record=True):
+		from spice_facility.ai import talk_to_data
+
+		mode = [{"mode": "record"}] if reads_record else []  # the mode is only asked when a model may read it
+		cloud = FakeProvider(chosen, False, json_answers=[*mode, {"dataset": "Patient Encounter"}, GROUP_SPEC],
 		                     text="[patient] had two encounters.")
-		config = replace(talk_to_data.get_config(), cloud_patient_data=consent)
+		config = replace(talk_to_data.get_config(), cloud_patient_data=consent, summary_provider=summary_provider)
 		with patch("spice_facility.ai.talk_to_data.chat_provider", return_value=cloud), \
 		     patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False), \
 		     patch("spice_facility.ai.talk_to_data.get_config", return_value=config):
-			answer, meta = run_question("Tell me about this patient", "Gemini", {"doctype": "Patient", "name": patient.name})
-		return patient, cloud, answer, meta
+			answer, meta = run_question(question, chosen, page)
+		return cloud, answer, meta
 
-	def test_with_consent_the_cloud_model_reads_the_record_pseudonymised(self):
-		patient, cloud, answer, meta = self._ask(consent=True)
+	def _patient_page(self):
+		return {"doctype": "Patient", "name": self.patient.name}
+
+	def test_with_consent_the_record_and_the_question_are_pseudonymised(self):
+		question = f"What happened to {self.patient.patient_name}? Call {self.MOBILE}."
+		cloud, answer, meta = self._ask(question, self._patient_page())
 		self.assertEqual(meta["mode"], "Record")
 		self.assertFalse(answer["narrator_is_local"])
-		self.assertFalse(answer["record_fallback"])
-		self.assertNotIn(patient.patient_name, " ".join(cloud.sent))
+		self.assertIsNone(answer["record_fallback"])
+		sent = " ".join(cloud.sent)
+		for identifying in (self.patient.patient_name, self.patient.name, self.MOBILE):
+			self.assertNotIn(identifying, sent)
 		self.assertEqual(answer["text"], "the patient had two encounters.")
 
 	def test_without_consent_it_is_answered_from_the_data(self):
-		_patient, _cloud, answer, meta = self._ask(consent=False)
-		self.assertEqual(meta["mode"], "Data")
-		self.assertTrue(answer["record_fallback"])
+		_cloud, answer, meta = self._ask("Tell me about this patient", self._patient_page(), consent=False, reads_record=False)
+		self.assertEqual((meta["mode"], answer["record_fallback"]), ("Data", "no_model"))
 
-	def test_a_patient_who_opted_out_is_never_read_by_a_cloud_model(self):
+	def test_only_the_cloud_model_the_agreement_covers_may_read_the_record(self):
+		_cloud, answer, meta = self._ask("Tell me about this patient", self._patient_page(), chosen="Claude",
+		                                 summary_provider="Gemini", reads_record=False)
+		self.assertEqual((meta["mode"], answer["record_fallback"]), ("Data", "other_model"))
+
+	def test_a_patient_who_opted_out_is_never_read_also_from_an_encounter_page(self):
 		from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD
 
-		if not frappe.get_meta("Patient").has_field(CLOUD_OPT_OUT_FIELD):
-			self.skipTest("the opt-out field is created by setup.install")
-		patient, cloud, answer, meta = self._ask(consent=True, opted_out=1)
-		self.assertEqual(meta["mode"], "Data")
-		self.assertTrue(answer["record_fallback"])
-		self.assertNotIn(patient.patient_name, " ".join(cloud.sent))
+		frappe.db.set_value("Patient", self.patient.name, CLOUD_OPT_OUT_FIELD, 1)
+		page = {"doctype": "Patient Encounter", "name": "SF-TEST-ENC-1"}  # opt-out found through the encounter
+		cloud, answer, meta = self._ask("What was diagnosed here?", page, reads_record=False)
+		self.assertEqual((meta["mode"], answer["record_fallback"]), ("Data", "opted_out"))
+		self.assertNotIn(self.patient.patient_name, " ".join(cloud.sent))
+
+	def test_from_an_encounter_page_its_own_kind_of_data_stays_on_the_patient(self):
+		page = resolve_page({"doctype": "Patient Encounter", "name": "SF-TEST-ENC-1"})
+		scope, _labels = implicit_scope(data_catalog.get("Patient Encounter"), page)
+		self.assertEqual(scope, {"patient": self.patient.name})  # previous encounters, not just this one
 
 
 class TestWithoutLocalModel(AITestCase):
