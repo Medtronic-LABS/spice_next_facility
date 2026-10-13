@@ -306,13 +306,53 @@ jobs:
             exit 1
           fi
 
-      - name: Test inside the image (site setup + bench run-tests)
+      # Ask Data end-to-end (e2e/): the image just built, running for real, answered by the fake model. It runs on
+      # pull requests that touch Ask Data (GitHub tests a PR as merged into its base) and on manual runs; a push to
+      # develop/training/main does not repeat it, so a merge deploys sooner.
+      - name: Decide whether to run the Ask Data e2e suite
+        id: e2e
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        working-directory: apps/spice_facility
+        run: |
+          set -eu
+          case "${EVENT}" in
+            workflow_dispatch) echo "run=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            pull_request) ;;
+            *) echo "run=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          if [ -z "${BASE_SHA}" ] || ! git fetch --quiet --depth=1 origin "${BASE_SHA}"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "${BASE_SHA}" HEAD | grep -qE '^(spice_facility/ai/|spice_facility/api/(talk_to_data|ai_summary)\.py|spice_facility/public/(js/ask_data/|js/ai_strings\.js|css/ai\.css)|e2e/)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Start MariaDB
         run: |
           set -eu
           docker network create ci
           docker run -d --name mariadb --network ci -e MYSQL_ROOT_PASSWORD=ci mariadb:10.6 \
             --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci \
             --skip-character-set-client-handshake --skip-innodb-read-only-compressed
+
+      # The e2e site installs in the background while the unit tests run (its site-setup waits for MariaDB).
+      - name: Start the image for e2e in the background (fake model on a test-only site)
+        if: steps.e2e.outputs.run == 'true'
+        run: |
+          set -eu
+          # Only the web port: answers reach the page through its 3 s polling fallback, as realtime (socket.io on
+          # 9000, routed by Caddy in production) is not exposed here.
+          docker run -d --name e2e-app --network ci -p 127.0.0.1:8000:8000 \
+            -e SITE_NAME=e2e.localhost -e DB_HOST=mariadb -e DB_ROOT_PASSWORD=ci -e ADMIN_PASSWORD=e2e-admin \
+            -e SPICE_AI_OLLAMA_ENABLED=0 "${CI_IMAGE}"
+
+      - name: Test inside the image (site setup + bench run-tests)
+        run: |
+          set -eu
           docker run --rm --network ci --user frappe \
             -e SITE_NAME=ci.localhost -e DB_HOST=mariadb -e DB_ROOT_PASSWORD=ci -e ADMIN_PASSWORD=ci-admin \
             -e SPICE_AI_OLLAMA_ENABLED=0 \
@@ -326,39 +366,13 @@ jobs:
               bench --site ci.localhost run-tests --app spice_facility
             '
 
-      # Ask Data end-to-end (e2e/): the image just tested, running for real, answered by the fake model. Runs when
-      # Ask Data code changes, and on manual runs.
-      - name: Decide whether to run the Ask Data e2e suite
-        id: e2e
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        working-directory: apps/spice_facility
-        run: |
-          set -eu
-          if [ "${EVENT}" = "workflow_dispatch" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
-          if [ -z "${BASE_SHA}" ] || [ "${BASE_SHA}" = "0000000000000000000000000000000000000000" ] \
-            || ! git fetch --quiet --depth=1 origin "${BASE_SHA}"; then
-            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          if git diff --name-only "${BASE_SHA}" HEAD | grep -qE '^(spice_facility/ai/|spice_facility/api/talk_to_data\.py|spice_facility/public/(js/ask_data/|js/ai_strings\.js|css/ai\.css)|e2e/)'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Start the image for e2e (fake model on a test-only site)
+      - name: Prepare the e2e site
         if: steps.e2e.outputs.run == 'true'
         run: |
           set -eu
-          # Only the web port: answers reach the page through its 3 s polling fallback, as realtime (socket.io on
-          # 9000, routed by Caddy in production) is not exposed here.
-          docker run -d --name e2e-app --network ci -p 127.0.0.1:8000:8000 \
-            -e SITE_NAME=e2e.localhost -e DB_HOST=mariadb -e DB_ROOT_PASSWORD=ci -e ADMIN_PASSWORD=e2e-admin \
-            -e SPICE_AI_OLLAMA_ENABLED=0 "${CI_IMAGE}"
           for _ in $(seq 1 120); do
             if curl -sf -H "Host: e2e.localhost" http://localhost:8000/api/method/ping >/dev/null; then break; fi
-            sleep 10
+            sleep 5
           done
           curl -sf -H "Host: e2e.localhost" http://localhost:8000/api/method/ping
           # Test-only switches, then fixtures and chat settings; restart so running processes read the config.
