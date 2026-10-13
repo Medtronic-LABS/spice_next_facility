@@ -29,6 +29,7 @@ from spice_facility.ai.summary_context import (
 	build_context,
 	kept_out_of_cloud,
 	patient_names,
+	patient_of,
 	pseudonymise,
 	record_refs,
 	restore_placeholder,
@@ -142,7 +143,7 @@ def keep_known_links(text, allowed):
 
 
 # Why no model may read the open record (shown on the answer card)
-NO_RECORD_MODEL, OTHER_MODEL, OPTED_OUT = "no_model", "other_model", "opted_out"
+NO_RECORD_MODEL, OTHER_MODEL, OPTED_OUT, NO_PATIENT = "no_model", "other_model", "opted_out", "no_patient"
 
 
 def record_reader(page, provider):
@@ -160,7 +161,11 @@ def record_reader(page, provider):
 		return None, NO_RECORD_MODEL
 	if provider.is_local or provider.name != config.summary_provider:
 		return None, OTHER_MODEL  # the agreement covers the summary provider, not any cloud model
-	if kept_out_of_cloud(frappe.get_doc(page["doctype"], page["name"])):
+	doc = frappe.get_doc(page["doctype"], page["name"])
+	if not patient_of(doc):
+		# e.g. an unregistered emergency arrival: no patient whose opt-out could be checked, so no cloud reading
+		return None, NO_PATIENT
+	if kept_out_of_cloud(doc):
 		return None, OPTED_OUT
 	return provider, None
 

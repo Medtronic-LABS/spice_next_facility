@@ -608,6 +608,12 @@ class TestFakeProvider(AITestCase):
 			query.validate(fake.complete_json("", messages, query.spec_schema(dataset)), dataset, 50)
 
 
+def get_config_for_tests():
+	from spice_facility.ai.config import get_config
+
+	return get_config()
+
+
 class TestCloudRecordAnswers(AITestCase):
 	"""Without a local model, a record question may go to a cloud model only with the site's consent, only to the
 	cloud model that consent's agreement covers (the summary provider), pseudonymised (record AND question), and
@@ -666,6 +672,27 @@ class TestCloudRecordAnswers(AITestCase):
 		cloud, answer, meta = self._ask("What was diagnosed here?", page, reads_record=False)
 		self.assertEqual((meta["mode"], answer["record_fallback"]), ("Data", "opted_out"))
 		self.assertNotIn(self.patient.patient_name, " ".join(cloud.sent))
+
+	def test_a_record_without_a_registered_patient_is_never_read_by_a_cloud_model(self):
+		from spice_facility.ai.talk_to_data import record_reader
+
+		cloud = FakeProvider("Gemini", False)
+		config = replace(get_config_for_tests(), cloud_patient_data=True, summary_provider="Gemini")
+		unlinked = frappe._dict(doctype="Patient Encounter", name="SF-UNLINKED", patient=None)
+		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False), \
+		     patch("spice_facility.ai.talk_to_data.get_config", return_value=config), \
+		     patch("spice_facility.ai.talk_to_data.frappe.get_doc", return_value=unlinked):
+			self.assertEqual(record_reader({"doctype": "Patient Encounter", "name": "SF-UNLINKED", "kind": "form"}, cloud),
+			                 (None, "no_patient"))
+
+	def test_a_local_model_reads_the_record_whatever_the_cloud_settings(self):
+		from spice_facility.ai.talk_to_data import record_reader
+
+		local = FakeProvider("Ollama", True)
+		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=True), \
+		     patch("spice_facility.ai.talk_to_data.local_provider", return_value=local):
+			self.assertEqual(record_reader({**self._patient_page(), "kind": "form"}, FakeProvider("Claude", False)),
+			                 (local, None))
 
 	def test_from_an_encounter_page_its_own_kind_of_data_stays_on_the_patient(self):
 		page = resolve_page({"doctype": "Patient Encounter", "name": "SF-TEST-ENC-1"})

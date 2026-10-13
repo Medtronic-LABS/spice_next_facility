@@ -19,10 +19,10 @@ from spice_facility.ai.config import ensure_ai_access, get_config, user_can_use_
 from spice_facility.ai.providers.base import AIProviderError
 from spice_facility.ai.providers.registry import NoSummaryProvider, summary_provider
 from spice_facility.ai.summary_context import (
-	kept_out_of_cloud,
 	SUPPORTED,
 	build_context,
 	context_hash,
+	kept_out_of_cloud,
 	patient_names,
 	pseudonymise,
 	restore_placeholder,
