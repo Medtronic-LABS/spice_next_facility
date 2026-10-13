@@ -100,7 +100,8 @@ spice_facility.ai.strings = {
 		asked: __("Asked"),
 		took: (seconds) => __("took {0} s", [seconds]),
 		technical: __("Technical details"),
-		record_fallback: __("Answered from the data, not by reading this record: questions about a record's details need the AI model on this server, which is not set up here."),
+		record_fallback: __("Answered from the data, not by reading this record: no AI model here may read patient records (an on-server model, or a cloud model the site has allowed)."),
+		record_answer_cloud: (model) => __("Answered by {0} (cloud) from this record, with the patient's name and contact details replaced first; allowed by this site's consent setting.", [model]),
 		answered_with: (provider, model) => __("Answered with {0} · {1}", [provider, model]),
 		examples: {
 			default: [

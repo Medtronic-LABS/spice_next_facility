@@ -1,12 +1,13 @@
 """Talk-to-Data orchestration.
 
 Data policy (decided with the user): the chosen chat provider — possibly a cloud model — sees only the
-question, the dataset/field names and earlier query plans. Records, query results and page/record context
-are only ever given to the local model, which writes every narrative and answers questions about the open
-record.
+question, the dataset/field names and earlier query plans. Query results are only ever given to the local
+model, which writes every narrative. Questions about the open record are answered by the local model; when there
+is none, by the chosen cloud model only if the site consented to cloud models reading patient records (the same
+consent as AI summaries), the patient has not opted out, and with the record pseudonymised first.
 
     ask -> mode (record | data)
-      record: local model answers from the record's grounded context
+      record: the record reader (record_reader) answers from the record's grounded context
       data:   chat provider plans (dataset, then QuerySpec) -> validate -> execute as the user with the
               page scope -> table / chart / drill-downs -> local model narrates
 """
@@ -20,11 +21,18 @@ from frappe import _
 from frappe.utils import nowdate
 
 from spice_facility.ai import data_catalog, prompts, query
-from spice_facility.ai.config import LOCAL_PROVIDERS, get_config
+from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD, LOCAL_PROVIDERS, get_config
 from spice_facility.ai.providers.registry import chat_provider, has_local_provider, local_provider
 from spice_facility.ai.summary_context import IDENTIFYING_KEYS
 from spice_facility.ai.summary_context import SUPPORTED as RECORD_DOCTYPES
-from spice_facility.ai.summary_context import build_context, record_refs, serialise
+from spice_facility.ai.summary_context import (
+	build_context,
+	patient_names,
+	pseudonymise,
+	record_refs,
+	restore_placeholder,
+	serialise,
+)
 
 LINK_TOKEN = re.compile(r"\[\[([^:\]]+):([^\]]+)\]\]")
 # Words that ask for a period or a time series; without them a small model's date range / bucket is dropped.
@@ -131,11 +139,26 @@ def keep_known_links(text, allowed):
 # ─── pipeline ───────────────────────────────────────────────────────────────
 
 
-def choose_mode(question, page, use_context, provider):
-	if not use_context or not page or page["kind"] != "form" or page["doctype"] not in RECORD_DOCTYPES:
-		return "data"
-	if not has_local_provider():
-		# Record questions read patient data, which only a local model may see.
+def record_reader(page, provider):
+	"""The model that may read the open record to answer about it, or None.
+
+	The local model; otherwise the chosen cloud model, only with the site's consent to cloud models reading patient
+	records (SPICE AI Settings, as for summaries) and never for a patient who opted out of cloud AI."""
+	if not page or page["kind"] != "form" or page["doctype"] not in RECORD_DOCTYPES:
+		return None
+	if has_local_provider():
+		return local_provider()
+	if provider.is_local or not get_config().cloud_patient_data:
+		return None
+	patient = page["name"] if page["doctype"] == "Patient" else frappe.db.get_value(page["doctype"], page["name"], "patient")
+	if patient and frappe.db.get_value("Patient", patient, CLOUD_OPT_OUT_FIELD):
+		return None
+	return provider
+
+
+def choose_mode(question, page, use_context, provider, reader):
+	if not use_context or not reader:
+		# no model may read this record: the question is answered from the data
 		return "data"
 	system = (f"The user is looking at one {page['doctype']} record. Decide if the question is about THAT record "
 	          "(its details, history, results, summary) -> record, or asks for counts, trends or lists across "
@@ -143,14 +166,18 @@ def choose_mode(question, page, use_context, provider):
 	return provider.complete_json(system, [{"role": "user", "content": question}], MODE_SCHEMA).get("mode", "data")
 
 
-def answer_record(question, page):
+def answer_record(question, page, reader):
 	doc = frappe.get_doc(page["doctype"], page["name"])
 	context = build_context(doc)
-	local = local_provider()
-	text = local.complete_text(prompts.RECORD_QA_SYSTEM, [{"role": "user", "content":
-	                           f"Context:\n{serialise(context, get_config().max_context_chars)}\n\nQuestion: {question}"}])
+	# a cloud reader gets the record pseudonymised, as cloud summaries do
+	sent = context if reader.is_local else pseudonymise(context, *patient_names(doc))
+	text = reader.complete_text(prompts.RECORD_QA_SYSTEM, [{"role": "user", "content":
+	                            f"Context:\n{serialise(sent, get_config().max_context_chars)}\n\nQuestion: {question}"}])
+	if not reader.is_local:
+		text = restore_placeholder(text, _("the patient"))
 	text = keep_known_links(text, record_refs(context) | {f"{doc.doctype}:{doc.name}"})
-	return {"mode": "record", "text": text, "narrator": local.model, "sources": cited_records(text, page)}
+	return {"mode": "record", "text": text, "narrator": reader.model, "narrator_is_local": reader.is_local,
+	        "sources": cited_records(text, page)}
 
 
 def redact_plan(spec):
@@ -279,12 +306,13 @@ def run_question(question, provider_name=None, page=None, use_context=True, hist
 	provider = chat_provider(provider_name)
 	page = resolve_page(page) if use_context else None
 	started = time.monotonic()
-	mode = choose_mode(question, page, use_context, provider)
-	answer = answer_record(question, page) if mode == "record" else answer_data(question, provider, history, page, use_context)
+	reader = record_reader(page, provider) if use_context else None
+	mode = choose_mode(question, page, use_context, provider, reader)
+	answer = answer_record(question, page, reader) if mode == "record" else answer_data(question, provider, history, page, use_context)
 	answer.update({"provider": provider.name, "planner": provider.model, "planner_is_local": provider.is_local,
 	               "page": page,
-	               # asked from a record that has record answers, but no local model may read it: say so on the card
+	               # asked from a record that has record answers, but no model may read it: say so on the card
 	               "record_fallback": bool(page and page["kind"] == "form" and page["doctype"] in RECORD_DOCTYPES
-	                                       and mode == "data" and not has_local_provider())})
+	                                       and mode == "data" and not reader)})
 	return answer, {"mode": mode.title(), "duration_ms": round((time.monotonic() - started) * 1000),
 	                "row_count": answer.get("rows_read") or 0, "provider": provider.name, "model": provider.model}

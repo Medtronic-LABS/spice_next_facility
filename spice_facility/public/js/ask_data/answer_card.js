@@ -104,7 +104,7 @@ frappe.provide("spice_facility.ai.ask");
 					+ section(S.records, line(S.rows_read(a.rows_read || 0) + (a.truncated && a.table ? ` · ${S.truncated(a.table.rows.length)}` : "")), "hash", 2);
 			}
 			const how = a.mode === "record"
-				? line(S.record_answer(a.narrator || a.planner || ""))
+				? line(a.narrator_is_local === false ? S.record_answer_cloud(a.narrator || "") : S.record_answer(a.narrator || a.planner || ""))
 				: line(S.planned_by(a.provider || "", a.planner || "")) + line(a.planner_is_local ? S.planned_local : S.planned_cloud)
 					+ line(a.narrator ? S.written_by(a.narrator) : S.summarised);
 			const asked = turn.asked_on
