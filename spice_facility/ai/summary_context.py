@@ -14,7 +14,7 @@ import frappe
 from frappe import _
 
 from spice_facility.ai.clinical_flags import flags_for, vital_trends
-from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD
+from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD, get_config
 from spice_facility.api import form_summary as fs
 
 LAB_HISTORY = 5
@@ -84,7 +84,7 @@ def active_diagnoses(patient, limit=8):
 def build_context(doc):
 	"""The record's grounding context, plus abnormal flags and vital trends computed in code."""
 	context = _base_context(doc)
-	patient = doc.name if doc.doctype == "Patient" else doc.get("patient")
+	patient = patient_of(doc)
 	sex = frappe.db.get_value("Patient", patient, "sex") if patient else None
 	context["abnormal"] = flags_for(context, sex)
 	context["vital_trends"] = vital_trends(context.get("vitals"))
@@ -189,10 +189,32 @@ def kept_out_of_cloud(doc):
 	return bool(patient and frappe.db.get_value("Patient", patient, CLOUD_OPT_OUT_FIELD))
 
 
+# Why a cloud model may not read a record (cloud_refusal); Ask Data shows these on the answer card.
+CLOUD_NOT_ALLOWED, CLOUD_OTHER_MODEL, CLOUD_NO_PATIENT, CLOUD_OPTED_OUT = (
+	"no_model", "other_model", "no_patient", "opted_out")
+
+
+def cloud_refusal(doc, provider):
+	"""The one rule for a cloud model reading a patient record (AI summaries and Ask Data): None when `provider` may
+	read `doc` pseudonymised, otherwise why not. It needs the site's consent (SPICE AI Settings), and only the cloud
+	model that consent's agreement covers (the summary provider); a record with no registered patient has no opt-out
+	to honour, so it is never sent; nor is a patient who opted out."""
+	config = get_config()
+	if not config.cloud_patient_data:
+		return CLOUD_NOT_ALLOWED
+	if provider.name != config.summary_provider:
+		return CLOUD_OTHER_MODEL
+	if not patient_of(doc):
+		return CLOUD_NO_PATIENT
+	if kept_out_of_cloud(doc):
+		return CLOUD_OPTED_OUT
+	return None
+
+
 def patient_names(doc):
 	"""Text naming this record's patient: (full names and the record id, name parts). Uses the linked Patient and
 	the record's own patient_name, which can differ (an alias, or an unregistered emergency arrival)."""
-	patient = doc.name if doc.doctype == "Patient" else doc.get("patient")
+	patient = patient_of(doc)
 	row = frappe.db.get_value("Patient", patient, ["patient_name", "first_name", "middle_name", "last_name"],
 	                          as_dict=True) if patient else None
 	full = {patient, doc.get("patient_name"), (row or {}).get("patient_name")}
@@ -250,6 +272,12 @@ def pseudonymise(context, full_names=(), name_parts=()):
 		return value
 
 	return clean(context)
+
+
+def pseudonymise_question(question, full_names, name_parts):
+	"""A typed question as a cloud model reading the record may see it. People type names in any case ("rahima"), so
+	here every name part is matched regardless of case; a short common word it also hits only loses a word."""
+	return pseudonymise({"question": question}, set(full_names) | set(name_parts), ())["question"]
 
 
 def restore_placeholder(value, replacement):

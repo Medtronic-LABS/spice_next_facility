@@ -21,8 +21,10 @@ from spice_facility.ai.providers.registry import NoSummaryProvider, summary_prov
 from spice_facility.ai.summary_context import (
 	SUPPORTED,
 	build_context,
+	cloud_refusal,
 	context_hash,
-	kept_out_of_cloud,
+	CLOUD_NO_PATIENT,
+	CLOUD_OPTED_OUT,
 	patient_names,
 	pseudonymise,
 	restore_placeholder,
@@ -139,10 +141,18 @@ def run(summary):
 
 def provider_for(doc):
 	"""The summary provider for this record; a cloud one is refused for a patient who opted out of cloud AI."""
-	provider = summary_provider()
-	if not provider.is_local and kept_out_of_cloud(doc):
+	provider = summary_provider()  # enabled, and for a cloud one the site's consent (registry)
+	# the shared rule again, for any cloud provider however it was obtained: refuse on every reason it gives
+	refusal = None if provider.is_local else cloud_refusal(doc, provider)
+	if refusal == CLOUD_OPTED_OUT:
 		raise NoSummaryProvider(_("This patient asked to be kept out of cloud AI, and no local model writes "
 		                          "summaries on this server."))
+	if refusal == CLOUD_NO_PATIENT:
+		raise NoSummaryProvider(_("This record is not linked to a registered patient, so a cloud model may not "
+		                          "summarise it, and no local model writes summaries on this server."))
+	if refusal:
+		raise NoSummaryProvider(_("A cloud model may not read patient records on this site, and no local model "
+		                          "writes summaries on this server."))
 	return provider
 
 
