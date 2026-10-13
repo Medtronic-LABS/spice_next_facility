@@ -1,12 +1,13 @@
 """Talk-to-Data orchestration.
 
 Data policy (decided with the user): the chosen chat provider — possibly a cloud model — sees only the
-question, the dataset/field names and earlier query plans. Records, query results and page/record context
-are only ever given to the local model, which writes every narrative and answers questions about the open
-record.
+question, the dataset/field names and earlier query plans. Query results are only ever given to the local
+model, which writes every narrative. Questions about the open record are answered by the local model; when there
+is none, by the chosen cloud model only if the site consented to cloud models reading patient records (the same
+consent as AI summaries), the patient has not opted out, and with the record pseudonymised first.
 
     ask -> mode (record | data)
-      record: local model answers from the record's grounded context
+      record: the record reader (record_reader) answers from the record's grounded context
       data:   chat provider plans (dataset, then QuerySpec) -> validate -> execute as the user with the
               page scope -> table / chart / drill-downs -> local model narrates
 """
@@ -24,7 +25,17 @@ from spice_facility.ai.config import LOCAL_PROVIDERS, get_config
 from spice_facility.ai.providers.registry import chat_provider, has_local_provider, local_provider
 from spice_facility.ai.summary_context import IDENTIFYING_KEYS
 from spice_facility.ai.summary_context import SUPPORTED as RECORD_DOCTYPES
-from spice_facility.ai.summary_context import build_context, record_refs, serialise
+from spice_facility.ai.summary_context import (
+	CLOUD_NOT_ALLOWED,
+	build_context,
+	cloud_refusal,
+	patient_names,
+	pseudonymise,
+	pseudonymise_question,
+	record_refs,
+	restore_placeholder,
+	serialise,
+)
 
 LINK_TOKEN = re.compile(r"\[\[([^:\]]+):([^\]]+)\]\]")
 # Words that ask for a period or a time series; without them a small model's date range / bucket is dropped.
@@ -72,8 +83,10 @@ def resolve_page(page):
 	return {"doctype": doctype, "filters": filters[:6], "label": doctype, "kind": "list"}
 
 
-def implicit_scope(dataset, page):
-	"""Fields that tie a dataset to the open record, e.g. Lab Test.patient = <open patient>."""
+def implicit_scope(dataset, page, own_record=False):
+	"""Fields that tie a dataset to the open record, e.g. Lab Test.patient = <open patient>. `own_record`: the
+	question is about the open record itself, so its own kind of data is limited to it (else "how many patients
+	this month?" asked from a patient would count one)."""
 	if not page or page["kind"] != "form":
 		return {}, []
 	doctype, name = page["doctype"], page["name"]
@@ -84,6 +97,10 @@ def implicit_scope(dataset, page):
 	patient = frappe.db.get_value(doctype, name, "patient") if frappe.get_meta(doctype).has_field("patient") else None
 	if patient and "Patient" in dataset["scopes"]:
 		return {dataset["scopes"]["Patient"]: patient}, [_("Patient = {0} (this page)").format(record_label("Patient", patient))]
+	if own_record and dataset["doctype"] == doctype:
+		# about this record, in its own kind of data with nothing above to tie it (e.g. Patient from a patient):
+		# that one record. A record that belongs to a patient was scoped to the patient just above.
+		return {"name": name}, [_("{0} = {1} (this page)").format(_(doctype), page["label"])]
 	return {}, []
 
 
@@ -128,26 +145,41 @@ def keep_known_links(text, allowed):
 # ─── pipeline ───────────────────────────────────────────────────────────────
 
 
-def choose_mode(question, page, use_context, provider):
-	if not use_context or not page or page["kind"] != "form" or page["doctype"] not in RECORD_DOCTYPES:
-		return "data"
-	if not has_local_provider():
-		# Record questions read patient data, which only a local model may see.
-		return "data"
+def record_reader(doc, provider):
+	"""(model, None) for the model that may read the open record to answer about it, or (None, why not): the local
+	model; otherwise the chosen cloud model if summary_context.cloud_refusal allows it."""
+	if has_local_provider():
+		return local_provider(), None
+	if provider.is_local:
+		return None, CLOUD_NOT_ALLOWED
+	refusal = cloud_refusal(doc, provider)
+	return (None, refusal) if refusal else (provider, None)
+
+
+def is_about_record(question, page, provider):
+	"""Whether a question asked from a record is about that record, or about many records. The chat provider sees
+	only the question, as its planner does."""
 	system = (f"The user is looking at one {page['doctype']} record. Decide if the question is about THAT record "
 	          "(its details, history, results, summary) -> record, or asks for counts, trends or lists across "
 	          "many records (even if limited to this record's related data) -> data.")
-	return provider.complete_json(system, [{"role": "user", "content": question}], MODE_SCHEMA).get("mode", "data")
+	return provider.complete_json(system, [{"role": "user", "content": question}], MODE_SCHEMA).get("mode") == "record"
 
 
-def answer_record(question, page):
-	doc = frappe.get_doc(page["doctype"], page["name"])
+def answer_record(question, doc, page, reader):
 	context = build_context(doc)
-	local = local_provider()
-	text = local.complete_text(prompts.RECORD_QA_SYSTEM, [{"role": "user", "content":
-	                           f"Context:\n{serialise(context, get_config().max_context_chars)}\n\nQuestion: {question}"}])
+	if reader.is_local:
+		context_sent = context
+	else:
+		# a cloud reader gets the record, and the question, pseudonymised (as cloud summaries are)
+		names = patient_names(doc)
+		context_sent, question = pseudonymise(context, *names), pseudonymise_question(question, *names)
+	text = reader.complete_text(prompts.RECORD_QA_SYSTEM, [{"role": "user", "content":
+	                            f"Context:\n{serialise(context_sent, get_config().max_context_chars)}\n\nQuestion: {question}"}])
+	if not reader.is_local:
+		text = restore_placeholder(text, _("the patient"))
 	text = keep_known_links(text, record_refs(context) | {f"{doc.doctype}:{doc.name}"})
-	return {"mode": "record", "text": text, "narrator": local.model, "sources": cited_records(text, page)}
+	return {"mode": "record", "text": text, "narrator": reader.model, "narrator_is_local": reader.is_local,
+	        "sources": cited_records(text, page)}
 
 
 def redact_plan(spec):
@@ -159,7 +191,7 @@ def redact_plan(spec):
 	return spec
 
 
-def plan(question, provider, history, page, datasets):
+def plan(question, provider, history, page, datasets, own_record=False):
 	"""Chat provider sees: question, dataset/field names, earlier plans. Nothing else.
 
 	`history` comes from the user's own logs of the same chat (never from the browser), and holds plans only: page
@@ -181,7 +213,7 @@ def plan(question, provider, history, page, datasets):
 	if not dataset:
 		raise query.QueryValidationError(_("I could not tell which data this question is about."))
 	scope_hint = ""
-	if page and page["kind"] == "form" and (dataset["scopes"].get(page["doctype"]) or "Patient" in dataset["scopes"]):
+	if implicit_scope(dataset, page, own_record)[0]:  # only when the system really limits the results
 		scope_hint = (f"The question is asked from one {page['doctype']} record; the system already limits results to "
 		              "that record, so do NOT add filters for it.")
 	spec = provider.complete_json(
@@ -191,12 +223,12 @@ def plan(question, provider, history, page, datasets):
 	return dataset, spec
 
 
-def answer_data(question, provider, history, page, use_context):
+def answer_data(question, provider, history, page, use_context, own_record=False):
 	config = get_config()
 	datasets = data_catalog.available()
-	dataset, raw_spec = plan(question, provider, history, page if use_context else None, datasets)
+	dataset, raw_spec = plan(question, provider, history, page if use_context else None, datasets, own_record)
 	spec = tidy(query.validate(raw_spec, dataset, config.max_groups), dataset, question)
-	scope, scope_labels = implicit_scope(dataset, page) if use_context else ({}, [])
+	scope, scope_labels = implicit_scope(dataset, page, own_record) if use_context else ({}, [])
 	# List-view filters scope this answer only. They stay out of the stored plan, which later goes back to the
 	# planner as history, and travel beside it as `scope_filters` (e.g. for pinning the chart).
 	scope_filters = []
@@ -275,9 +307,17 @@ def run_question(question, provider_name=None, page=None, use_context=True, hist
 	provider = chat_provider(provider_name)
 	page = resolve_page(page) if use_context else None
 	started = time.monotonic()
-	mode = choose_mode(question, page, use_context, provider)
-	answer = answer_record(question, page) if mode == "record" else answer_data(question, provider, history, page, use_context)
+	# a record with record answers: is the question about it? who may read it?
+	doc = frappe.get_doc(page["doctype"], page["name"]) if page and page["kind"] == "form" \
+		and page["doctype"] in RECORD_DOCTYPES else None
+	about_record = bool(doc) and is_about_record(question, page, provider)
+	reader, no_reader_reason = record_reader(doc, provider) if about_record else (None, None)
+	mode = "record" if reader else "data"
+	answer = answer_record(question, doc, page, reader) if reader else answer_data(
+		question, provider, history, page, use_context, own_record=about_record)
 	answer.update({"provider": provider.name, "planner": provider.model, "planner_is_local": provider.is_local,
-	               "page": page})
+	               "page": page,
+	               # a question about the record that no model may read: why it was answered from the data instead
+	               "record_fallback": no_reader_reason})
 	return answer, {"mode": mode.title(), "duration_ms": round((time.monotonic() - started) * 1000),
 	                "row_count": answer.get("rows_read") or 0, "provider": provider.name, "model": provider.model}

@@ -123,6 +123,17 @@ class TestCatalogAndQuery(AITestCase):
 		self.assertEqual(scope, {"patient": patient.name})
 		self.assertTrue(labels)
 
+	def test_asking_about_the_open_records_own_kind_scopes_to_that_record(self):
+		patient = any_patient()
+		page = resolve_page({"doctype": "Patient", "name": patient.name})
+		dataset = data_catalog.get("Patient")
+		self.assertEqual(implicit_scope(dataset, page)[0], {})  # a question about many patients
+		scope, labels = implicit_scope(dataset, page, own_record=True)
+		self.assertEqual(scope, {"name": patient.name})
+		self.assertTrue(labels)
+		spec = query.validate({**GROUP_SPEC, "group_by": "", "output": "list", "list_fields": ["patient_name"]}, dataset, 50)
+		self.assertEqual(query.execute(spec, dataset, scope)["rows_read"], 1)  # not every patient
+
 	def test_tidy_drops_unrequested_period_and_bucket(self):
 		dataset = data_catalog.get("Patient Appointment")
 		spec = query.validate({**GROUP_SPEC, "group_by": "department", "time_bucket": "month",
@@ -598,6 +609,116 @@ class TestFakeProvider(AITestCase):
 			query.validate(fake.complete_json("", messages, query.spec_schema(dataset)), dataset, 50)
 
 
+class TestCloudRecordAnswers(AITestCase):
+	"""Without a local model, a question about the open record may go to a cloud model only under the one rule
+	summaries use too (summary_context.cloud_refusal): the site's consent, the cloud model its agreement covers, a
+	registered patient who has not opted out; and the record AND the question are pseudonymised."""
+
+	MOBILE = "9876501234"
+
+	def setUp(self):
+		from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD
+
+		self.assertTrue(frappe.get_meta("Patient").has_field(CLOUD_OPT_OUT_FIELD), "created by setup.install")
+		self.patient = any_patient()
+		frappe.db.set_value("Patient", self.patient.name, {"mobile": self.MOBILE, CLOUD_OPT_OUT_FIELD: 0})
+
+	def _config(self, consent=True, summary_provider="Gemini"):
+		from spice_facility.ai.config import get_config
+
+		return replace(get_config(), cloud_patient_data=consent, summary_provider=summary_provider)
+
+	def _ask(self, question, page, intent="record", consent=True, chosen="Gemini", summary_provider="Gemini"):
+		cloud = FakeProvider(chosen, False, json_answers=[{"mode": intent}, {"dataset": "Patient Encounter"}, GROUP_SPEC],
+		                     text="[patient] had two encounters.")
+		config = self._config(consent, summary_provider)
+		with patch("spice_facility.ai.talk_to_data.chat_provider", return_value=cloud), \
+		     patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False), \
+		     patch("spice_facility.ai.talk_to_data.get_config", return_value=config), \
+		     patch("spice_facility.ai.summary_context.get_config", return_value=config):
+			answer, meta = run_question(question, chosen, page)
+		return cloud, answer, meta
+
+	def _patient_page(self):
+		return {"doctype": "Patient", "name": self.patient.name}
+
+	def test_with_consent_the_record_and_the_question_are_pseudonymised(self):
+		first = max(self.patient.patient_name.split(), key=len).lower()  # a name part, typed in lower case
+		question = f"What happened to {self.patient.patient_name}? Did {first} call from {self.MOBILE}?"
+		cloud, answer, meta = self._ask(question, self._patient_page())
+		self.assertEqual(meta["mode"], "Record")
+		self.assertFalse(answer["narrator_is_local"])
+		self.assertIsNone(answer["record_fallback"])
+		record_call = cloud.sent[-1]  # the call that carries the record
+		for identifying in (self.patient.patient_name, self.patient.name, self.MOBILE):
+			self.assertNotIn(identifying, record_call)
+		asked = record_call.rsplit("Question:", 1)[1].lower().replace("[patient]", "")
+		self.assertNotIn(first, asked)  # the name part typed in lower case is replaced too
+		self.assertEqual(answer["text"], "the patient had two encounters.")
+
+	def test_without_consent_it_is_answered_from_the_data_and_says_why(self):
+		_cloud, answer, meta = self._ask("Tell me about this patient", self._patient_page(), consent=False)
+		self.assertEqual((meta["mode"], answer["record_fallback"]), ("Data", "no_model"))
+
+	def test_only_the_cloud_model_the_agreement_covers_may_read_the_record(self):
+		_cloud, answer, meta = self._ask("Tell me about this patient", self._patient_page(), chosen="Claude")
+		self.assertEqual((meta["mode"], answer["record_fallback"]), ("Data", "other_model"))
+
+	def test_a_patient_who_opted_out_is_never_read_also_from_an_encounter_page(self):
+		from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD
+
+		frappe.db.set_value("Patient", self.patient.name, CLOUD_OPT_OUT_FIELD, 1)
+		page = {"doctype": "Patient Encounter", "name": "SF-TEST-ENC-1"}  # opt-out found through the encounter
+		cloud, answer, meta = self._ask("What was diagnosed here?", page)
+		self.assertEqual((meta["mode"], answer["record_fallback"]), ("Data", "opted_out"))
+		self.assertFalse(any("Context:" in sent for sent in cloud.sent))  # the record was never sent
+
+	def test_a_question_about_many_records_is_not_limited_to_the_open_one_nor_flagged(self):
+		cloud = FakeProvider("Gemini", False, json_answers=[
+			{"mode": "data"}, {"dataset": "Patient"},
+			{**GROUP_SPEC, "group_by": "", "output": "number", "list_fields": []}])
+		config = self._config(consent=False)
+		with patch("spice_facility.ai.talk_to_data.chat_provider", return_value=cloud), \
+		     patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False), \
+		     patch("spice_facility.ai.talk_to_data.get_config", return_value=config), \
+		     patch("spice_facility.ai.summary_context.get_config", return_value=config):
+			answer, _meta = run_question("How many patients are registered?", "Gemini", self._patient_page())
+		self.assertIsNone(answer["record_fallback"])
+		self.assertEqual(answer["number"]["value"], frappe.db.count("Patient"))  # every patient, not this one
+
+	def test_a_record_without_a_registered_patient_is_never_read_by_a_cloud_model(self):
+		from spice_facility.ai.talk_to_data import record_reader
+
+		unlinked = frappe._dict(doctype="Patient Encounter", name="SF-UNLINKED", patient=None)
+		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False), \
+		     patch("spice_facility.ai.summary_context.get_config", return_value=self._config()):
+			self.assertEqual(record_reader(unlinked, FakeProvider("Gemini", False)), (None, "no_patient"))
+
+	def test_ai_summaries_follow_the_same_rule(self):
+		from spice_facility.ai.providers.registry import NoSummaryProvider
+		from spice_facility.api import ai_summary
+
+		unlinked = frappe._dict(doctype="Emergency Record", name="SF-UNLINKED", patient=None)
+		with patch("spice_facility.api.ai_summary.summary_provider", return_value=FakeProvider("Gemini", False)), \
+		     patch("spice_facility.ai.summary_context.get_config", return_value=self._config()), \
+		     self.assertRaises(NoSummaryProvider):
+			ai_summary.provider_for(unlinked)
+
+	def test_a_local_model_reads_the_record_whatever_the_cloud_settings(self):
+		from spice_facility.ai.talk_to_data import record_reader
+
+		local = FakeProvider("Ollama", True)
+		with patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=True), \
+		     patch("spice_facility.ai.talk_to_data.local_provider", return_value=local):
+			self.assertEqual(record_reader(frappe.get_doc("Patient", self.patient.name), FakeProvider("Claude", False)),
+			                 (local, None))
+
+	def test_from_an_encounter_page_its_own_kind_of_data_stays_on_the_patient(self):
+		page = resolve_page({"doctype": "Patient Encounter", "name": "SF-TEST-ENC-1"})
+		scope, _labels = implicit_scope(data_catalog.get("Patient Encounter"), page, own_record=True)
+		self.assertEqual(scope, {"patient": self.patient.name})  # previous encounters, not just this one
+
+
 class TestWithoutLocalModel(AITestCase):
 	def test_answers_are_built_from_the_result_and_record_questions_stay_data(self):
 		cloud = FakeProvider("Claude", False, json_answers=[{"dataset": "Patient Encounter"}, GROUP_SPEC])
@@ -608,6 +729,18 @@ class TestWithoutLocalModel(AITestCase):
 		self.assertTrue(answer["text"])
 		self.assertIn("chart", answer)
 		self.assertEqual(answer["source"]["doctype"], "Patient Encounter")
+
+	def test_a_record_question_without_a_local_model_says_it_was_answered_from_data(self):
+		patient = any_patient()
+		cloud = FakeProvider("Claude", False, json_answers=[{"mode": "record"}, {"dataset": "Patient"},
+		                                                     {**GROUP_SPEC, "group_by": "", "output": "list",
+		                                                      "list_fields": ["patient_name"]}])
+		with patch("spice_facility.ai.talk_to_data.chat_provider", return_value=cloud), \
+		     patch("spice_facility.ai.talk_to_data.has_local_provider", return_value=False):
+			answer, meta = run_question("Tell me about this patient", "Claude", {"doctype": "Patient", "name": patient.name})
+		self.assertEqual(meta["mode"], "Data")
+		self.assertTrue(answer["record_fallback"])
+		self.assertEqual(answer["rows_read"], 1)  # this patient only, not every patient
 
 	def test_summaries_switch_off_without_a_local_model(self):
 		from spice_facility.ai.config import get_config
@@ -895,8 +1028,12 @@ class TestCloudSummaries(AITestCase):
 	def test_a_cloud_model_never_receives_direct_identifiers(self):
 		from spice_facility.api import ai_summary
 
+		from spice_facility.ai.config import get_config
+
 		patient = frappe.get_doc("Patient", any_patient())
 		patient.db_set({"mobile": "9000000001"})
+		# the site consented to cloud summaries by Claude (the shared rule, summary_context.cloud_refusal)
+		consented = replace(get_config(), cloud_patient_data=True, summary_provider="Claude")
 		for is_local, should_see_name in ((False, False), (True, True)):
 			model = FakeProvider("Claude" if not is_local else "Ollama", is_local, json_answers=[
 				{"headline": "h", "summary": "s", "alerts": [], "follow_up": []}])
@@ -904,6 +1041,7 @@ class TestCloudSummaries(AITestCase):
 			                      "reference_name": patient.name, "status": "Queued",
 			                      "requested_by": "Administrator"}).insert(ignore_permissions=True)
 			with patch("spice_facility.api.ai_summary.summary_provider", return_value=model), \
+			     patch("spice_facility.ai.summary_context.get_config", return_value=consented), \
 			     patch("spice_facility.api.ai_summary._notify"):
 				ai_summary.run(row.name)
 			sent = " ".join(model.sent)

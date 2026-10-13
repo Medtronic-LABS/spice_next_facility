@@ -41,6 +41,7 @@ frappe.provide("spice_facility.ai.ask");
 				${this.sources_panel(turn)}
 				${figure ? `<div class="sf-ask-kpi"><span class="sf-ask-kpi-value">${fmt(figure.value, "Float")}</span>
 					<span class="sf-ask-kpi-label">${esc(figure.label)}</span></div>` : ""}
+				${a.record_fallback ? `<div class="sf-ask-fallback">${icon("info")}<span>${esc(S.record_fallback[a.record_fallback] || S.record_fallback.no_model)}</span></div>` : ""}
 				<div class="sf-ask-text">${linkify(a.text, labels)}</div>
 				${empty_result}
 				${visual === "chart" ? '<div class="sf-ask-chart"></div>' : ""}
@@ -103,7 +104,7 @@ frappe.provide("spice_facility.ai.ask");
 					+ section(S.records, line(S.rows_read(a.rows_read || 0) + (a.truncated && a.table ? ` · ${S.truncated(a.table.rows.length)}` : "")), "hash", 2);
 			}
 			const how = a.mode === "record"
-				? line(S.record_answer(a.narrator || a.planner || ""))
+				? line(a.narrator_is_local === false ? S.record_answer_cloud(a.narrator || "") : S.record_answer(a.narrator || a.planner || ""))
 				: line(S.planned_by(a.provider || "", a.planner || "")) + line(a.planner_is_local ? S.planned_local : S.planned_cloud)
 					+ line(a.narrator ? S.written_by(a.narrator) : S.summarised);
 			const asked = turn.asked_on
