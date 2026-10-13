@@ -396,6 +396,13 @@ jobs:
           cache: npm
           cache-dependency-path: apps/spice_facility/e2e/package-lock.json
 
+      # Chromium for the pinned Playwright; the system libraries it needs are still installed each run (--with-deps).
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.e2e.outputs.run == 'true'
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/spice_facility/e2e/package-lock.json') }}
+
       - name: Run the Ask Data e2e suite
         if: steps.e2e.outputs.run == 'true'
         working-directory: apps/spice_facility/e2e
@@ -582,6 +589,10 @@ jobs:
             UserKnownHostsFile ~/.ssh/known_hosts
             BatchMode yes
             ServerAliveInterval 30
+            # one connection for the whole job: each new ssh/scp handshake costs a few seconds
+            ControlMaster auto
+            ControlPath ~/.ssh/cm-%C
+            ControlPersist 10m
           CFG
           ssh deploy-target true
 
