@@ -37,6 +37,11 @@ def _related(doctype, filters, fields, order_by="creation desc", limit=ROW_CAP):
 	return frappe.get_list(doctype, filters=filters, fields=fields, order_by=order_by, limit_page_length=limit)
 
 
+def _readable(doctype, filters, fields, order_by="creation desc", limit=ROW_CAP):
+	"""`_related` for a panel that combines several doctypes: one the user cannot read is left out, not an error."""
+	return _related(doctype, filters, fields, order_by, limit) if frappe.has_permission(doctype, "read") else []
+
+
 # The patient's records counted on the Patient card, each opening its list: (doctype, filters beyond `patient`)
 PATIENT_RECORD_COUNTS = (("Patient Encounter", {"docstatus": 1}), ("Lab Test", {"docstatus": ["!=", 2]}),
                          ("Vital Signs", {"docstatus": 1}))
@@ -53,23 +58,23 @@ def _record_counts(patient):
 
 def patient_header(doc):
 	today = nowdate()
-	allergies = _related("Patient Allergy", {"patient": doc.name, "status": "Active"},
-	                     ["allergy", "severity", "reaction"], "severity asc")
-	medications = _related("Medication Request",
-	                       {"patient": doc.name, "docstatus": 1, "status": ["like", "active%"]},
-	                       ["medication", "dosage", "period", "order_date"], "order_date desc", 8)
-	last_visit = _related("Patient Encounter", {"patient": doc.name, "docstatus": 1},
-	                      ["encounter_date", "practitioner_name"], "encounter_date desc", 1)
-	next_visit = _related("Patient Appointment",
-	                      {"patient": doc.name, "appointment_date": [">=", today], "status": ["not in", ["Cancelled", "No Show"]]},
-	                      ["appointment_date", "appointment_time", "practitioner_name"], "appointment_date asc, appointment_time asc", 1)
-	policy = _related("Patient Insurance Policy",
-	                  {"patient": doc.name, "docstatus": 1, "policy_expiry_date": [">=", today]},
-	                  ["insurance_payor", "policy_number", "policy_expiry_date"], "policy_expiry_date desc", 1)
+	allergies = _readable("Patient Allergy", {"patient": doc.name, "status": "Active"},
+	                      ["allergy", "severity", "reaction"], "severity asc")
+	medications = _readable("Medication Request",
+	                        {"patient": doc.name, "docstatus": 1, "status": ["like", "active%"]},
+	                        ["medication", "dosage", "period", "order_date"], "order_date desc", 8)
+	last_visit = _readable("Patient Encounter", {"patient": doc.name, "docstatus": 1},
+	                       ["encounter_date", "practitioner_name"], "encounter_date desc", 1)
+	next_visit = _readable("Patient Appointment",
+	                       {"patient": doc.name, "appointment_date": [">=", today], "status": ["not in", ["Cancelled", "No Show"]]},
+	                       ["appointment_date", "appointment_time", "practitioner_name"], "appointment_date asc, appointment_time asc", 1)
+	policy = _readable("Patient Insurance Policy",
+	                   {"patient": doc.name, "docstatus": 1, "policy_expiry_date": [">=", today]},
+	                   ["insurance_payor", "policy_number", "policy_expiry_date"], "policy_expiry_date desc", 1)
 	outstanding = 0
 	if doc.customer:
-		invoices = _related("Sales Invoice", {"customer": doc.customer, "docstatus": 1, "outstanding_amount": [">", 0]},
-		                    ["outstanding_amount"], limit=200)
+		invoices = _readable("Sales Invoice", {"customer": doc.customer, "docstatus": 1, "outstanding_amount": [">", 0]},
+		                     ["outstanding_amount"], limit=200)
 		outstanding = sum(flt(i.outstanding_amount) for i in invoices)
 
 	admission = None
@@ -102,6 +107,7 @@ PATIENT_QUICK_ACTIONS = ("Patient Appointment", "Patient Encounter", "Vital Sign
 UPCOMING_CAP = 5
 RESULTS_CAP = 5
 TIMELINE_CAP = 8
+PENDING_CAP = 99
 
 
 def patient_quick_actions():
@@ -116,18 +122,18 @@ def patient_glance(doc):
 	history; risks are the present tobacco / alcohol use and other risk factors recorded on the patient."""
 	from spice_facility.ai.summary_context import active_diagnoses
 
-	allergies = _related("Patient Allergy", {"patient": doc.name, "status": "Active"},
-	                     ["name", "allergy", "severity", "reaction"], "severity asc")
-	medications = _related("Medication Request",
-	                       {"patient": doc.name, "docstatus": 1, "status": ["like", "active%"]},
-	                       ["name", "medication", "dosage", "period"], "order_date desc", 8)
+	allergies = _readable("Patient Allergy", {"patient": doc.name, "status": "Active"},
+	                      ["name", "allergy", "severity", "reaction"], "severity asc")
+	medications = _readable("Medication Request",
+	                        {"patient": doc.name, "docstatus": 1, "status": ["like", "active%"]},
+	                        ["name", "medication", "dosage", "period"], "order_date desc", 8)
 	risks = [{"label": label, "value": doc.get(field)} for field, label in (
 		("tobacco_current_use", _("Tobacco")), ("alcohol_current_use", _("Alcohol")),
 		("other_risk_factors", _("Other risks")), ("surrounding_factors", _("Occupational / environmental")))
 		if doc.get(field)]
 	return {
 		"patient": doc.name, "allergies": allergies, "medications": medications,
-		"problems": active_diagnoses(doc.name), "history": doc.medical_history, "risks": risks,
+		"problems": active_diagnoses(doc.name) if frappe.has_permission("Patient Encounter", "read") else [], "history": doc.medical_history, "risks": risks,
 		"can_add_allergy": frappe.has_permission("Patient Allergy", "create"),
 	}
 
@@ -137,13 +143,17 @@ def patient_results(doc):
 	from spice_facility.ai.clinical_flags import lab_flags
 	from spice_facility.ai.summary_context import recent_lab_results
 
+	if not frappe.has_permission("Lab Test", "read"):
+		return {"patient": doc.name, "results": [], "pending": 0}
 	tests = recent_lab_results(doc.name, limit=RESULTS_CAP)
 	results = []
 	for test in tests:
 		flags = lab_flags([test], doc.sex)
 		results.append({"name": test["record"].split(":", 1)[1], "test": test["test"], "date": test["date"],
 		                "abnormal": [{"parameter": f["parameter"], "text": _short_flag(f["text"])} for f in flags]})
-	pending = frappe.db.count("Lab Test", {"patient": doc.name, "docstatus": 0}) if frappe.has_permission("Lab Test", "read") else 0
+	# get_list, not db.count: only the drafts this user may open (user permissions apply)
+	pending = len(frappe.get_list("Lab Test", filters={"patient": doc.name, "docstatus": 0}, pluck="name",
+	                              limit_page_length=PENDING_CAP))
 	return {"patient": doc.name, "results": results, "pending": pending}
 
 
@@ -156,10 +166,10 @@ def _short_flag(text):
 
 def patient_upcoming(doc):
 	"""Appointments still to come, nearest first."""
-	rows = _related("Patient Appointment",
-	                {"patient": doc.name, "appointment_date": [">=", nowdate()], "status": ["not in", ["Cancelled", "No Show"]]},
-	                ["name", "appointment_date", "appointment_time", "practitioner_name", "department", "status"],
-	                "appointment_date asc, appointment_time asc", UPCOMING_CAP)
+	rows = _readable("Patient Appointment",
+	                 {"patient": doc.name, "appointment_date": [">=", nowdate()], "status": ["not in", ["Cancelled", "No Show"]]},
+	                 ["name", "appointment_date", "appointment_time", "practitioner_name", "department", "status"],
+	                 "appointment_date asc, appointment_time asc", UPCOMING_CAP)
 	return {"patient": doc.name, "appointments": rows,
 	        "can_book": frappe.has_permission("Patient Appointment", "create")}
 
@@ -167,24 +177,21 @@ def patient_upcoming(doc):
 def patient_history(doc):
 	"""One timeline of the patient's visits: encounters, emergency visits and admissions, newest first."""
 	events = []
-	if frappe.has_permission("Patient Encounter", "read"):
-		events += [{"doctype": "Patient Encounter", "name": r.name, "date": r.encounter_date, "title": r.medical_department,
-		            "who": r.practitioner_name, "status": r.status}
-		           for r in _related("Patient Encounter", {"patient": doc.name, "docstatus": ["!=", 2]},
-		                             ["name", "encounter_date", "medical_department", "practitioner_name", "status"],
-		                             "encounter_date desc", TIMELINE_CAP)]
-	if frappe.has_permission("Emergency Record", "read"):
-		events += [{"doctype": "Emergency Record", "name": r.name, "date": getdate(r.arrival_datetime) if r.arrival_datetime else None,
-		            "title": r.triage_level, "who": None, "status": r.status}
-		           for r in _related("Emergency Record", {"patient": doc.name},
-		                             ["name", "arrival_datetime", "triage_level", "status"], "arrival_datetime desc", TIMELINE_CAP)]
-	if frappe.has_permission("Inpatient Record", "read"):
-		events += [{"doctype": "Inpatient Record", "name": r.name,
-		            "date": getdate(r.admitted_datetime) if r.admitted_datetime else None,
-		            "title": r.medical_department, "who": r.primary_practitioner, "status": r.status}
-		           for r in _related("Inpatient Record", {"patient": doc.name},
-		                             ["name", "admitted_datetime", "medical_department", "primary_practitioner", "status"],
-		                             "admitted_datetime desc", TIMELINE_CAP)]
+	events += [{"doctype": "Patient Encounter", "name": r.name, "date": r.encounter_date, "title": r.medical_department,
+	            "who": r.practitioner_name, "status": r.status}
+	           for r in _readable("Patient Encounter", {"patient": doc.name, "docstatus": ["!=", 2]},
+	                              ["name", "encounter_date", "medical_department", "practitioner_name", "status"],
+	                              "encounter_date desc", TIMELINE_CAP)]
+	events += [{"doctype": "Emergency Record", "name": r.name, "date": getdate(r.arrival_datetime) if r.arrival_datetime else None,
+	            "title": r.triage_level, "who": None, "status": r.status}
+	           for r in _readable("Emergency Record", {"patient": doc.name},
+	                              ["name", "arrival_datetime", "triage_level", "status"], "arrival_datetime desc", TIMELINE_CAP)]
+	events += [{"doctype": "Inpatient Record", "name": r.name,
+	            "date": getdate(r.admitted_datetime) if r.admitted_datetime else None,
+	            "title": r.medical_department, "who": r.primary_practitioner, "status": r.status}
+	           for r in _readable("Inpatient Record", {"patient": doc.name},
+	                              ["name", "admitted_datetime", "medical_department", "primary_practitioner", "status"],
+	                              "admitted_datetime desc", TIMELINE_CAP)]
 	events.sort(key=lambda e: str(e["date"] or ""), reverse=True)
 	kinds = sorted({e["doctype"] for e in events})
 	return {"patient": doc.name, "events": events[:TIMELINE_CAP], "kinds": kinds}

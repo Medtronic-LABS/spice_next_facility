@@ -283,7 +283,13 @@ def apply_native_properties(doctype):
 	native = {f.fieldname for f in frappe.get_meta(doctype).fields}
 	wanted = {(name, "label"): label for name, label in layout["labels"].items() if name in native}
 	wanted |= {(name, "hidden"): "1" for name in layout["hidden"] if name in native}
+	# a site's own Customize Form choice wins: make_property_setter would replace it
+	customised = set(frappe.get_all("Property Setter", {"doc_type": doctype, "property": ["in", NATIVE_PROPERTIES],
+	                                                    "is_system_generated": 0, "doctype_or_field": "DocField"},
+	                                ["field_name", "property"], as_list=True))
 	for (fieldname, prop), value in wanted.items():
+		if (fieldname, prop) in customised:
+			continue
 		make_property_setter(doctype, fieldname, prop, value, "Check" if prop == "hidden" else "Data",
 		                     validate_fields_for_doctype=False, is_system_generated=True)
 	for name, fieldname, prop in frappe.get_all("Property Setter", {"doc_type": doctype, "property": ["in", NATIVE_PROPERTIES],
@@ -296,11 +302,12 @@ def apply_native_properties(doctype):
 
 NATIVE_PROPERTIES = ("label", "hidden")
 NATIVE_LAYOUT_LOG = "spice_facility_native_layout"
+NATIVE_LAYOUT_LOG_PARENT = "spice_facility"  # its own defaults parent: kept out of every user's boot sysdefaults
 
 
 def _set_by_native_layout(doctype, fieldname, prop):
-	"""Whether this app set the property (recorded in the cache-free defaults, so other apps' setters stay)."""
-	owned = frappe.parse_json(frappe.db.get_default(NATIVE_LAYOUT_LOG) or "{}")
+	"""Whether this app set the property (recorded by record_native_properties, so other apps' setters stay)."""
+	owned = frappe.parse_json(frappe.db.get_default(NATIVE_LAYOUT_LOG, parent=NATIVE_LAYOUT_LOG_PARENT) or "{}")
 	return f"{fieldname}.{prop}" in owned.get(doctype, [])
 
 
@@ -308,11 +315,11 @@ def record_native_properties():
 	"""Remember which native properties this app sets, so a later run removes only its own."""
 	owned = {doctype: [f"{n}.label" for n in layout["labels"]] + [f"{n}.hidden" for n in layout["hidden"]]
 	         for doctype, layout in NATIVE_LAYOUT.items()}
-	previous = frappe.parse_json(frappe.db.get_default(NATIVE_LAYOUT_LOG) or "{}")
+	previous = frappe.parse_json(frappe.db.get_default(NATIVE_LAYOUT_LOG, parent=NATIVE_LAYOUT_LOG_PARENT) or "{}")
 	for doctype, props in previous.items():
 		owned.setdefault(doctype, [])
 		owned[doctype] = sorted(set(owned[doctype]) | set(props))
-	frappe.db.set_default(NATIVE_LAYOUT_LOG, json.dumps(owned))
+	frappe.db.set_default(NATIVE_LAYOUT_LOG, json.dumps(owned), parent=NATIVE_LAYOUT_LOG_PARENT)
 
 
 def apply_doctype(doctype, blocks):

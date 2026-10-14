@@ -12,6 +12,8 @@ count. So each card/chart names the field it expects to be scoped by (`scope`), 
 source that would not scope that way.
 """
 
+from spice_facility.ai.config import CLOUD_OPT_OUT_FIELD
+
 TODAY = "today"  # frappe_theme substitutes the current date for this literal in extended conditions
 
 
@@ -228,7 +230,7 @@ NATIVE_LAYOUT = {
 			"sf_sec_contact", "mobile", "phone", "email", "sf_col_contact", "invite_user", "user_id",
 			"address_contacts", "address_html", "column_break_22", "contact_html", "sb_relation", "patient_relation",
 			# Preferences and consent
-			"sf_sec_preferences", "report_preference", "spice_no_cloud_ai",
+			"sf_sec_preferences", "report_preference", CLOUD_OPT_OUT_FIELD,
 			# Billing, notes
 			"customer_details_section", "customer", "customer_group", "territory", "country", "column_break_24",
 			"default_currency", "default_price_list", "language", "more_info", "patient_details",

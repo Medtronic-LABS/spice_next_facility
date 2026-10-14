@@ -227,6 +227,8 @@ frappe.provide("spice_facility.form_ux");
 			// a vital never measured for this patient (e.g. BMI without a height) gets no tile and no pill
 			const measured = new Set(VITAL_METRICS.filter((m) => d.points.some((p) => m.series.some((s) => p[s.key] != null))).map((m) => m.key));
 			const metrics = VITAL_METRICS.filter((m) => measured.has(m.key));
+			// no charted vital measured (e.g. weight only): tiles without a trend
+			if (!metrics.length) return (host.innerHTML = `<div class="sf-vitals-head">${vitals_strip(latest, prev, measured)}</div>`);
 			host.innerHTML = `<div class="sf-vitals-head">${vitals_strip(latest, prev, measured)}
 				<button class="sf-act sf-trend-toggle" data-show="${esc(S.vitals.show_trend)}" data-hide="${esc(S.vitals.hide_trend)}">${esc(S.vitals.show_trend)}</button></div>
 				<div class="sf-trend" hidden>

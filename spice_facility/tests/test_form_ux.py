@@ -59,6 +59,21 @@ class TestFormUxSpec(IntegrationTestCase):
 		self.assertLess(order.index("spice_no_cloud_ai"), order.index("medical_history_tab"))
 		self.assertEqual(meta.get_field("dashboard_tab").label, "Records")
 
+	def test_a_site_customised_label_is_kept(self):
+		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+		# as Customize Form saves it
+		make_property_setter("Patient", "more_info", "label", "Clinic notes", "Data", validate_fields_for_doctype=False,
+		                     is_system_generated=False)
+		try:
+			apply_form_ux()
+			setter = frappe.db.get_value("Property Setter", {"doc_type": "Patient", "field_name": "more_info",
+			                                                  "property": "label"}, ["value", "is_system_generated"], as_dict=True)
+			self.assertEqual((setter.value, setter.is_system_generated), ("Clinic notes", 0))
+		finally:
+			frappe.db.delete("Property Setter", {"doc_type": "Patient", "field_name": "more_info", "property": "label"})
+			apply_form_ux()
+
 	def test_connections_panel_has_a_tab(self):
 		for doctype in FORMS:
 			tabs = [f for f in frappe.get_meta(doctype).fields if f.fieldtype == "Tab Break" and f.show_dashboard]
@@ -125,6 +140,29 @@ class TestFormSummaryApi(IntegrationTestCase):
 		self.assertTrue(all(a.status not in ("Cancelled", "No Show") for a in upcoming["appointments"]))
 		self.assertIn("results", get_block("patient_results", "Patient", TEST_PATIENT))
 		self.assertEqual(get_block("patient_header", "Patient", TEST_PATIENT)["patient"], TEST_PATIENT)
+
+	def test_patient_panels_leave_out_what_the_user_cannot_read(self):
+		from frappe.permissions import add_permission
+		from spice_facility.tests.test_ai import TEST_PATIENT, ensure_fixtures
+
+		ensure_fixtures()
+		role, user = "SF Patient Reader", "sf-patient-reader@example.com"
+		if not frappe.db.exists("Role", role):
+			frappe.get_doc({"doctype": "Role", "role_name": role, "desk_access": 1}).insert(ignore_permissions=True)
+		add_permission("Patient", role, 0)
+		if not frappe.db.exists("User", user):
+			frappe.get_doc({"doctype": "User", "email": user, "first_name": "Patient reader", "send_welcome_email": 0,
+			                "roles": [{"role": role}]}).insert(ignore_permissions=True)
+		frappe.set_user(user)
+		try:
+			for block in ("patient_header", "patient_glance", "patient_results", "patient_upcoming", "patient_history"):
+				self.assertIsInstance(get_block(block, "Patient", TEST_PATIENT), dict, block)
+			glance = get_block("patient_glance", "Patient", TEST_PATIENT)
+			self.assertEqual((glance["allergies"], glance["problems"]), ([], []))
+			self.assertEqual(get_block("patient_results", "Patient", TEST_PATIENT), {"patient": TEST_PATIENT, "results": [], "pending": 0})
+			self.assertEqual(get_block("patient_history", "Patient", TEST_PATIENT)["events"], [])
+		finally:
+			frappe.set_user("Administrator")
 
 	def test_out_of_range_lines_are_short(self):
 		from spice_facility.api.form_summary import _short_flag
