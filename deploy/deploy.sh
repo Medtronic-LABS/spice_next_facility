@@ -7,7 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 COMPOSE="docker compose -f docker-compose.yml"
 LAST_GOOD_FILE=.last_good_image_tag
-HEALTH_TRIES="${HEALTH_TRIES:-90}"   # x10s: a first deploy creates the site and installs 4 apps
+HEALTH_TRIES="${HEALTH_TRIES:-300}"   # x3s: a first deploy creates the site and installs 4 apps
+HEALTH_INTERVAL=3                     # seconds between checks: a routine deploy is healthy in under a minute
 
 # .env is data for Docker Compose, not a shell script: read the two values needed here instead of
 # sourcing it, so a secret's characters can never run as shell on the host.
@@ -34,7 +35,7 @@ wait_healthy() {
 		if healthy; then
 			return 0
 		fi
-		sleep 10
+		sleep "${HEALTH_INTERVAL}"
 	done
 	return 1
 }

@@ -10,7 +10,7 @@ import time
 from spice_facility.ai.providers.base import LLMProvider
 
 SLOW_MARKER = "[slow]"
-SLOW_SECONDS = 20
+SLOW_SECONDS = 8  # long enough to stop a running question; e2e/tests/ask-data.spec.ts waits on it
 
 # keyword in the question -> (dataset, group_by, output, time_bucket); the first match wins, the last is the default.
 # One entry per visual the chat draws: ranked bars, pie, donut, line and column trends, a single number.

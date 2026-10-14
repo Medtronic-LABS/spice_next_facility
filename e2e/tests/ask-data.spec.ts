@@ -2,7 +2,7 @@
 // keyword, and a question containing "[slow]" keeps planning for 20 s so it can be stopped while running.
 import { expect, test, type Page } from "@playwright/test";
 
-const SLOW_PLANNING_MS = 20_000; // fake.py SLOW_SECONDS
+const SLOW_PLANNING_MS = 8_000; // fake.py SLOW_SECONDS
 // Questions carry a per-run suffix so a retry never meets the chats an earlier attempt left behind.
 const RUN = Date.now().toString(36);
 const q = (text: string) => `${text} #${RUN}`;
