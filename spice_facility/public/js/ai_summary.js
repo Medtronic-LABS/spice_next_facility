@@ -23,7 +23,10 @@ frappe.provide("spice_facility.ai");
 	// Compare findings with alerts on their leading words: the model often restates an alert as a finding.
 	const gist = (text) => (text || "").split(" — ")[0].toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 24);
 
-	function render_summary(r, S, H, actions) {
+	// Collapsed (the default), the card shows its headline and the first alerts; the rest opens on demand.
+	const COLLAPSED_ALERTS = 2;
+
+	function render_summary(r, S, H, actions, expanded = false) {
 		const s = r.summary || {};
 		const alert_list = s.alerts || [];
 		const alerted = new Set(alert_list.map((a) => gist(a.text)));
@@ -37,10 +40,14 @@ frappe.provide("spice_facility.ai");
 		const findings = (s.key_findings || []).filter((f) => !alerted.has(gist(f.text)))
 			.map((f) => `<li>${H.esc(f.text)}</li>`).join("");
 		const follow = (s.follow_up || []).map((f) => `<li>${H.esc(f)}</li>`).join("");
+		const hidden_alerts = Math.max(0, alert_list.length - COLLAPSED_ALERTS);
+		const more = hidden_alerts || s.summary || findings || follow
+			? `<button class="sf-ai-more" data-more="${H.esc(S.show_more(hidden_alerts))}" data-less="${H.esc(S.show_less)}">
+				${H.esc(expanded ? S.show_less : S.show_more(hidden_alerts))}</button>` : "";
 		const side = `${findings ? H.section(S.key_findings, `<ul class="sf-list">${findings}</ul>`) : ""}
 			${follow ? H.section(S.follow_up, `<ul class="sf-list">${follow}</ul>`) : ""}`;
 		return `
-			<div class="sf-ai-card">
+			<div class="sf-ai-card ${expanded ? "" : "sf-ai-collapsed"}">
 				<div class="sf-ai-head">
 					<div class="sf-ai-headline">✨ ${H.esc(s.headline || "")}</div>
 					<div class="sf-ai-head-actions">
@@ -53,7 +60,8 @@ frappe.provide("spice_facility.ai");
 					${alerts ? H.section(S.alerts, `<ul class="sf-ai-alerts">${alerts}</ul>`) : ""}
 					${side.trim() ? `<div>${side}</div>` : ""}
 				</div>
-				<div class="sf-muted sf-ai-footer">${H.esc(S.footer(r.model, frappe.datetime.prettyDate(r.generated_on)))}</div>
+				<div class="sf-ai-foot">${more}
+					<span class="sf-muted sf-ai-footer">${H.esc(S.footer(r.model, frappe.datetime.prettyDate(r.generated_on)))}</span></div>
 			</div>`;
 	}
 
@@ -86,8 +94,14 @@ frappe.provide("spice_facility.ai");
 				? `<div class="sf-banner sf-red">${H.esc(S.failed)} ${H.esc(data.last_failed.error || "")}</div>` : "";
 			// The action sits in the card's header (or beside the empty/progress line), never on a row of its own.
 			host.innerHTML = data.ready
-				? `${progress}${failed}${render_summary(data.ready, S, H, button)}`
+				? `${progress}${failed}${render_summary(data.ready, S, H, button, host._sf_expanded)}`
 				: `<div class="sf-ai-empty">${progress || `<span class="sf-muted">${H.esc(S.none)}</span>`}${button}</div>${failed}`;
+			// open / close the full summary; kept across redraws (refresh, polling)
+			host.querySelector(".sf-ai-more")?.addEventListener("click", (e) => {
+				host._sf_expanded = !host._sf_expanded;
+				host.querySelector(".sf-ai-card").classList.toggle("sf-ai-collapsed", !host._sf_expanded);
+				e.currentTarget.textContent = host._sf_expanded ? e.currentTarget.dataset.less : e.currentTarget.dataset.more;
+			});
 			host.querySelector(".sf-ai-generate")?.addEventListener("click", async () => {
 				try {
 					await frappe.xcall(`${METHOD}.generate`, { doctype: frm.doctype, name: frm.doc.name });
