@@ -189,7 +189,19 @@ To use Ask Data with Claude, OpenAI or Gemini, open **SPICE AI Settings**, enabl
 ## 5. Every later deploy
 
 Merge to `develop` / `training`. Tests must pass before an image is pushed; `site-setup` runs
-`bench migrate` on start (single instance, so there is no migration race).
+`bench migrate` on start (single instance, so there is no migration race), unless nothing that can change the
+database changed since the site's last migrate. The image carries a fingerprint of the pinned
+Frappe/ERPNext/Health/frappe_theme versions and spice_facility's DocTypes, hooks, patches and the code its
+`after_migrate` runs (`/home/frappe/migrate-fingerprint`); after migrating, the site keeps a copy
+(`sites/<site>/.migrated-fingerprint`). When they match, migrate is skipped and a deploy is healthy in seconds.
+
+Force a migrate anyway (e.g. after restoring an older backup into the site): delete the site's copy and restart,
+or run the migrate command under "Operations" below.
+
+```bash
+docker exec spice-next-facility rm -f "/home/frappe/frappe-bench/sites/$SITE_NAME/.migrated-fingerprint"
+docker compose restart app
+```
 
 Run a specific earlier build: re-run the deploy job of that commit's workflow run, or on the host set
 `IMAGE_TAG='sha-<commit>@sha256:<digest>'` in `.env` and run `./deploy.sh`. Always include the digest

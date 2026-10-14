@@ -10,6 +10,20 @@ WORKDIR /home/frappe/frappe-bench
 
 COPY --chown=frappe:frappe apps/spice_facility apps/spice_facility
 
+# What can change the database: the pinned Frappe/ERPNext/Health/frappe_theme versions, and spice_facility's
+# DocTypes and other JSON metadata, hooks, patches, module list and the code its after_migrate runs (setup,
+# desk navigation, form layouts, and ai/config.py whose field names and settings it creates).
+# site-setup.sh skips `bench migrate` when this matches the site's last migrate. JS/CSS, templates, tests
+# and other runtime-only Python (api/, the rest of ai/) cannot change the schema.
+RUN cd apps/spice_facility \
+	&& { cat docker/base/versions.env; \
+	     find spice_facility \( -path '*/public' -o -path '*/tests' -o -path '*/templates' -o -name __pycache__ \) -prune -o \
+	          -type f \( -name '*.json' -o -name hooks.py -o -name patches.txt -o -name modules.txt \
+	                     -o -path '*/patches/*.py' -o -path '*/setup/*.py' -o -path '*/desk_navigation/*.py' \
+	                     -o -path '*/form_ux/*.py' -o -path 'spice_facility/ai/config.py' \) -print \
+	          | LC_ALL=C sort | xargs sha256sum; } \
+	| sha256sum | cut -d' ' -f1 > /home/frappe/migrate-fingerprint
+
 # --no-deps: spice_facility adds no Python dependencies beyond what the base installed.
 RUN ./env/bin/pip install --no-cache-dir --no-deps -e ./apps/spice_facility \
 	&& printf 'frappe\nerpnext\nhealthcare\nfrappe_theme\nspice_facility\n' > sites/apps.txt \
