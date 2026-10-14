@@ -19,18 +19,18 @@ def before_install():
 def after_install():
 	apply_fixes()
 	apply_navigation()
+	ensure_ai_patient_fields()  # before the form layout, which places the field it creates
 	apply_form_ux()
 	fill_ai_settings_defaults()
-	ensure_ai_patient_fields()
 	seed_ai_roles()
 
 
 def after_migrate():
 	apply_fixes()
 	apply_navigation()
+	ensure_ai_patient_fields()  # before the form layout, which places the field it creates
 	apply_form_ux()
 	fill_ai_settings_defaults()
-	ensure_ai_patient_fields()
 	seed_ai_roles()
 
 
@@ -73,8 +73,8 @@ def ensure_ai_patient_fields():
 	create_custom_fields({"Patient": [{
 		"fieldname": CLOUD_OPT_OUT_FIELD, "fieldtype": "Check", "label": "Keep out of cloud AI",
 		"insert_after": "report_preference", "default": "0",
-		"description": "The patient asked that their records never be sent to cloud AI models (AI summaries then "
-		               "need the local model).",
+		"description": "The patient asked that their records never be sent to cloud AI models: AI summaries and "
+		               "Ask Data questions about their records then need the on-server model.",
 	}]}, update=True)
 
 

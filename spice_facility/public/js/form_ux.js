@@ -41,6 +41,14 @@ frappe.provide("spice_facility.form_ux");
 	const tile = (label, value, tone = "") =>
 		`<div class="sf-tile ${tone}"><div class="sf-tile-label">${esc(label)}</div><div class="sf-tile-value">${value}</div></div>`;
 	const empty = (text) => `<div class="sf-empty">${esc(text)}</div>`;
+	// A card with its title and an optional action at the right of the title row.
+	const card = (title, body, action = "", extra = "") =>
+		`<div class="sf-card ${extra}"><div class="sf-card-head"><div class="sf-card-title">${esc(title)}</div>${action}</div>${body}</div>`;
+	// A button that opens a new record of `doctype` for this patient (handled in mount, outside the shadow root).
+	const new_for = (doctype, patient, label, primary = false) =>
+		`<button class="sf-act${primary ? " sf-act-primary" : ""}" data-new="${esc(doctype)}" data-patient="${esc(patient)}">${esc(label)}</button>`;
+	// One line saying there is nothing here (with an optional action), instead of an empty box.
+	const none = (text, action = "") => `<div class="sf-none"><span>${esc(text)}</span>${action}</div>`;
 	const section = (title, body) => `<div class="sf-section"><div class="sf-section-title">${esc(title)}</div>${body}</div>`;
 
 	const STATUS_TONE = {
@@ -93,15 +101,20 @@ frappe.provide("spice_facility.form_ux");
 		{ key: "bmi", label: S.vitals.bmi, series: [{ key: "bmi", name: S.vitals.bmi, color: "#64748b" }] },
 	];
 
-	function vitals_strip(v) {
+	// ↑ / ↓ against the previous reading of the same vital
+	const change = (now, before) => (now == null || before == null || now === before ? ""
+		: `<span class="sf-change">${now > before ? "↑" : "↓"} ${num(Math.abs(now - before), 1)}</span>`);
+
+	function vitals_strip(v, prev = {}, measured = null) {
 		if (!v) return empty(S.vitals.empty);
+		const shown = (key) => !measured || measured.has(key);
 		const bp = v.bp_systolic != null ? `${num(v.bp_systolic)}/${num(v.bp_diastolic)}` : "—";
 		return `<div class="sf-tiles">
-			${tile(S.vitals.bp, bp, v.bp_systolic >= 140 || v.bp_diastolic >= 90 ? "sf-alert" : "")}
-			${tile(S.vitals.pulse, num(v.pulse), v.pulse > 100 ? "sf-alert" : "")}
-			${tile(S.vitals.temperature, num(v.temperature, 1), v.temperature >= 100.4 ? "sf-alert" : "")}
-			${tile(S.vitals.respiratory_rate, num(v.respiratory_rate), v.respiratory_rate > 24 ? "sf-alert" : "")}
-			${tile(S.vitals.bmi, num(v.bmi, 1))}
+			${tile(S.vitals.bp, bp + change(v.bp_systolic, prev.bp_systolic), v.bp_systolic >= 140 || v.bp_diastolic >= 90 ? "sf-alert" : "")}
+			${shown("pulse") ? tile(S.vitals.pulse, num(v.pulse) + change(v.pulse, prev.pulse), v.pulse > 100 ? "sf-alert" : "") : ""}
+			${shown("temperature") ? tile(S.vitals.temperature, num(v.temperature, 1) + change(v.temperature, prev.temperature), v.temperature >= 100.4 ? "sf-alert" : "") : ""}
+			${shown("respiratory_rate") ? tile(S.vitals.respiratory_rate, num(v.respiratory_rate) + change(v.respiratory_rate, prev.respiratory_rate), v.respiratory_rate > 24 ? "sf-alert" : "") : ""}
+			${shown("bmi") ? tile(S.vitals.bmi, num(v.bmi, 1) + change(v.bmi, prev.bmi)) : ""}
 		</div><div class="sf-muted">${esc(S.vitals.latest)} · ${date(v.date)}</div>`;
 	}
 
@@ -112,13 +125,6 @@ frappe.provide("spice_facility.form_ux");
 			const flags = [];
 			if (d.admission) flags.push(badge(`${S.patient.admitted}${d.admission.bed ? " · " + S.patient.bed(d.admission.bed) : ""}`, "orange"));
 			if (d.emergency) flags.push(badge(`${S.patient.in_emergency}${d.emergency.triage_level ? " · " + d.emergency.triage_level : ""}`, "red"));
-			const allergies = d.allergies.length
-				? d.allergies.map((a) => badge(`${a.allergy}${a.severity ? " · " + a.severity : ""}`, SEVERITY_TONE[a.severity] || "red")).join("")
-				: badge(S.patient.no_allergies, "green");
-			const meds = d.medications.length
-				? `<ul class="sf-pt-meds">${d.medications.map((m) => `<li><span class="sf-pt-med">${esc(m.medication)}</span>
-					<span class="sf-muted">${esc([m.dosage, m.period].filter(Boolean).join(" · "))}</span></li>`).join("")}</ul>`
-				: `<span class="sf-muted">${esc(S.patient.no_medications)}</span>`;
 			const insurance = d.policy
 				? `${esc(d.policy.insurance_payor)} <span class="sf-muted">${esc(S.patient.expires(date(d.policy.policy_expiry_date)))}</span>`
 				: `<span class="sf-muted">${esc(S.patient.no_insurance)}</span>`;
@@ -126,6 +132,8 @@ frappe.provide("spice_facility.form_ux");
 				const label = esc(S.patient.records[r.doctype]?.(r.count) || `${r.count} ${__(r.doctype)}`);
 				return list_link(r.doctype, "patient", r.patient, label.replace(String(r.count), `<b>${r.count}</b>`));
 			}).join("");
+			const actions = (d.actions || []).map((doctype, i) =>
+				new_for(doctype, d.patient, S.patient.actions[doctype] || __(doctype), i === 0)).join("");
 			const last = d.last_visit, next = d.next_visit;
 			host.innerHTML = `
 				<div class="sf-pt">
@@ -141,22 +149,96 @@ frappe.provide("spice_facility.form_ux");
 							${stat(S.patient.outstanding, money(d.outstanding, d.currency), "", d.outstanding > 0 ? "sf-pt-due" : "")}
 						</div>
 					</div>
-					<div class="sf-pt-body">
-						${section(S.patient.allergies, `<div class="sf-chips">${allergies}</div>`)}
-						${section(S.patient.medications, meds)}
-						<div>
-							${section(S.patient.insurance, insurance)}
-							${records ? section(S.patient.records_title, `<div class="sf-pt-records">${records}</div>`) : ""}
+					<div class="sf-pt-foot">
+						<div class="sf-pt-actions">${actions}</div>
+						<div class="sf-pt-meta">
+							<span><span class="sf-muted">${esc(S.patient.insurance)}</span> ${insurance}</span>
+							${records ? `<span class="sf-pt-records">${records}</span>` : ""}
 						</div>
 					</div>
 				</div>`;
 		},
 
+		// What could cause harm, side by side with the AI summary.
+		patient_glance(host, d) {
+			const row = (label, body) => `<div class="sf-glance-row"><div class="sf-glance-label">${esc(label)}</div><div>${body}</div></div>`;
+			const allergies = d.allergies.length
+				? `<div class="sf-chips">${d.allergies.map((a) => link("Patient Allergy", a.name,
+					`${a.allergy}${a.severity ? " · " + a.severity : ""}`)).map((html, i) =>
+					`<span class="sf-badge sf-${SEVERITY_TONE[d.allergies[i].severity] || "red"}">${html}</span>`).join("")}</div>`
+				: badge(S.patient.no_allergies, "green");
+			const meds = d.medications.length
+				? `<ul class="sf-pt-meds">${d.medications.map((m) => `<li><span class="sf-pt-med">${esc(m.medication)}</span>
+					<span class="sf-muted">${esc([m.dosage, m.period].filter(Boolean).join(" · "))}</span></li>`).join("")}</ul>`
+				: `<span class="sf-muted">${esc(S.patient.no_medications)}</span>`;
+			const problems = [
+				d.problems.length ? `<div class="sf-chips">${d.problems.map((p) => badge(p, "gray")).join("")}</div>` : "",
+				d.history ? `<div class="sf-muted sf-clamp">${esc(d.history)}</div>` : "",
+			].join("") || `<span class="sf-muted">${esc(S.patient.no_problems)}</span>`;
+			const risks = d.risks.length
+				? d.risks.map((r) => `<div><span class="sf-muted">${esc(r.label)}:</span> ${esc(r.value)}</div>`).join("")
+				: `<span class="sf-muted">${esc(S.patient.no_risks)}</span>`;
+			const add = d.can_add_allergy ? new_for("Patient Allergy", d.patient, S.patient.add_allergy) : "";
+			host.innerHTML = card(S.patient.glance_title, `
+				${row(S.patient.allergies, allergies)}
+				${row(S.patient.medications, meds)}
+				${row(S.patient.problems, problems)}
+				${row(S.patient.risks, risks)}`, add, "sf-glance");
+		},
+
+		patient_results(host, d) {
+			const rows = d.results.map((r) => `<div class="sf-list-row">
+				<div class="sf-list-main">${link("Lab Test", r.name, r.test)}
+					${r.abnormal.length ? `<div class="sf-list-sub sf-red-text">${r.abnormal.map((a) => esc(a.text)).join(" · ")}</div>` : ""}</div>
+				<div class="sf-list-side">${r.abnormal.length ? badge(S.patient.out_of_range(r.abnormal.length), "red") : badge(S.patient.in_range, "green")}
+					<div class="sf-list-sub">${esc(date(r.date))}</div></div></div>`).join("");
+			const pending = d.pending ? `<div class="sf-muted sf-list-note">${esc(S.patient.pending_tests(d.pending))}</div>` : "";
+			host.innerHTML = card(S.patient.results_title,
+				(rows || none(S.patient.no_results)) + pending,
+				list_link("Lab Test", "patient", d.patient, esc(S.patient.view_all)));
+		},
+
+		patient_upcoming(host, d) {
+			const book = d.can_book ? new_for("Patient Appointment", d.patient, S.patient.book) : "";
+			const rows = d.appointments.map((a) => `<div class="sf-list-row">
+				<div class="sf-list-main">${link("Patient Appointment", a.name, `${date(a.appointment_date)} · ${(a.appointment_time || "").slice(0, 5)}`)}
+					<div class="sf-list-sub">${esc([a.practitioner_name, a.department].filter(Boolean).join(" · "))}</div></div>
+				<div class="sf-list-side">${badge(a.status, STATUS_TONE[a.status] || "gray")}
+					<div class="sf-list-sub">${esc(relative_day(a.appointment_date))}</div></div></div>`).join("");
+			host.innerHTML = card(S.patient.upcoming_title, rows || none(S.patient.no_upcoming, book),
+				rows ? `${book}${list_link("Patient Appointment", "patient", d.patient, esc(S.patient.view_all))}` : "");
+		},
+
+		patient_history(host, d) {
+			const rows = d.events.map((e) => `<div class="sf-list-row">
+				<div class="sf-list-date">${esc(date(e.date))}</div>
+				<div class="sf-list-main">${link(e.doctype, e.name, S.patient.events[e.doctype] || __(e.doctype))}
+					<span class="sf-muted">${esc([e.title, e.who].filter(Boolean).join(" · "))}</span></div>
+				<div class="sf-list-side">${e.status ? badge(e.status, STATUS_TONE[e.status] || "gray") : ""}</div></div>`).join("");
+			const all = (d.kinds || []).map((kind) =>
+				list_link(kind, "patient", d.patient, esc(S.patient.events[kind] || __(kind)))).join(" · ");
+			host.innerHTML = card(S.patient.history_title, rows || none(S.patient.no_history),
+				all ? `<span class="sf-card-links">${esc(S.patient.view_all)}: ${all}</span>` : "");
+		},
+
 		vitals_trend(host, d) {
 			if (!d.points.length) return (host.innerHTML = empty(S.vitals.empty));
-			host.innerHTML = `${vitals_strip(d.points[d.points.length - 1])}
-				<div class="sf-toggle">${VITAL_METRICS.map((m, i) => `<button class="sf-pill${i ? "" : " active"}" data-metric="${m.key}">${esc(m.label)}</button>`).join("")}</div>
-				<div class="sf-chart"></div>`;
+			const latest = d.points[d.points.length - 1], prev = d.points[d.points.length - 2] || {};
+			// a vital never measured for this patient (e.g. BMI without a height) gets no tile and no pill
+			const measured = new Set(VITAL_METRICS.filter((m) => d.points.some((p) => m.series.some((s) => p[s.key] != null))).map((m) => m.key));
+			const metrics = VITAL_METRICS.filter((m) => measured.has(m.key));
+			host.innerHTML = `<div class="sf-vitals-head">${vitals_strip(latest, prev, measured)}
+				<button class="sf-act sf-trend-toggle" data-show="${esc(S.vitals.show_trend)}" data-hide="${esc(S.vitals.hide_trend)}">${esc(S.vitals.show_trend)}</button></div>
+				<div class="sf-trend" hidden>
+				<div class="sf-toggle">${metrics.map((m, i) => `<button class="sf-pill${i ? "" : " active"}" data-metric="${m.key}">${esc(m.label)}</button>`).join("")}</div>
+				<div class="sf-chart"></div></div>`;
+			const trend = host.querySelector(".sf-trend");
+			let drawn = false;
+			host.querySelector(".sf-trend-toggle").addEventListener("click", (e) => {
+				trend.hidden = !trend.hidden;
+				e.currentTarget.textContent = trend.hidden ? e.currentTarget.dataset.show : e.currentTarget.dataset.hide;
+				if (!trend.hidden && !drawn) { drawn = true; open_first(); }  // Frappe Charts needs a visible box
+			});
 			const chart_el = host.querySelector(".sf-chart");
 			const draw = (key) => {
 				const metric = VITAL_METRICS.find((m) => m.key === key);
@@ -177,9 +259,11 @@ frappe.provide("spice_facility.form_ux");
 				const lo = Math.min(...values), hi = Math.max(...values);
 				return (hi - lo) / (hi || 1);
 			};
-			const first = VITAL_METRICS.reduce((best, m) => (spread(m) > spread(best) ? m : best), VITAL_METRICS[0]);
-			host.querySelectorAll(".sf-pill").forEach((b) => b.classList.toggle("active", b.dataset.metric === first.key));
-			draw(first.key);
+			const open_first = () => {
+				const first = metrics.reduce((best, m) => (spread(m) > spread(best) ? m : best), metrics[0]);
+				host.querySelectorAll(".sf-pill").forEach((b) => b.classList.toggle("active", b.dataset.metric === first.key));
+				draw(first.key);
+			};
 		},
 
 		encounter_history(host, d) {
@@ -374,6 +458,12 @@ frappe.provide("spice_facility.form_ux");
 		}
 		// Links live in a shadow root, where the desk router cannot see clicks; route them here.
 		host.addEventListener("click", (e) => {
+			const create = e.target.closest(".sf-act[data-new]");
+			if (create) {
+				e.preventDefault();
+				frappe.new_doc(create.dataset.new, { patient: create.dataset.patient });
+				return;
+			}
 			const a = e.target.closest(".sf-link");
 			if (!a) return;
 			e.preventDefault();
