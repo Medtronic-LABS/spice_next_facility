@@ -17,6 +17,7 @@ import frappe
 from spice_facility.desk_navigation.menus import (
 	HOST_APP,
 	HOST_MODULE,
+	MENU_LABELS,
 	MENUS,
 	OWNERSHIP_ORDER,
 	WORKSPACE_MENU,
@@ -94,7 +95,15 @@ def doctype_owners():
 
 def upsert_sidebar(title, icon, items, owner):
 	sidebar = frappe.get_doc("Sidebar", title) if frappe.db.exists("Sidebar", title) else frappe.new_doc("Sidebar")
-	sidebar.update({"title": title, "app": HOST_APP, "module": menu_module(title), "header_icon": icon, "standard": 0})
+	# `title` (the MENUS/module key) stays the docname/module for routing; the *displayed* title
+	# can read differently -- see MENU_LABELS in menus.py for why.
+	sidebar.update({
+		"title": MENU_LABELS.get(title, title),
+		"app": HOST_APP,
+		"module": menu_module(title),
+		"header_icon": icon,
+		"standard": 0,
+	})
 	rows = []
 	for item in items:
 		row = {key: value for key, value in item.items() if value is not None}
@@ -117,7 +126,14 @@ def upsert_dock(entries):
 	dock.set(
 		"items",
 		[
-			{"link_type": "Sidebar", "link_to": sidebar, "title": sidebar, "icon": icon, "added": 1, "hidden": 0}
+			{
+				"link_type": "Sidebar",
+				"link_to": sidebar,
+				"title": MENU_LABELS.get(sidebar, sidebar),
+				"icon": icon,
+				"added": 1,
+				"hidden": 0,
+			}
 			for sidebar, icon in entries
 		],
 	)

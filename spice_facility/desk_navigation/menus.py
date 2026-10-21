@@ -35,6 +35,13 @@ def submenu(label, icon, children):
 
 # Menu title -> (dock icon, items). The menu named after the module ("Healthcare") is the one Desk
 # falls back to for any Healthcare document opened outside the dock (search, links).
+#
+# Keys here MUST stay equal to this app's real Module Def names (menu_module() below ties a
+# Sidebar's `module` field straight to its MENUS key, and Frappe's Module Def.before_rename()
+# refuses to rename a non-custom, app-declared module -- see modules.txt). "Reception" got a
+# genuinely new Module Def (modules.txt + reception/__init__.py) for this reason; the other four
+# keys are the untouched original module names. Demo-facing display text that differs from the
+# key lives in MENU_LABELS below instead of here.
 MENUS = {
 	"Healthcare": ("house", [
 		link("Home", "Healthcare", "Workspace", "house"),
@@ -52,6 +59,33 @@ MENUS = {
 			report("Emergency Triage Queue"), report("Inpatient Medication Orders"),
 			report("Planned vs Actual Therapy Session"), report("Medication Item wise Sales"),
 		]),
+	]),
+	# Demo flow, front door first: Reception checks the patient in / books the appointment --
+	# cross-listing the same items "Outpatient" below also carries (this file already cross-lists
+	# doctypes across menus elsewhere, e.g. Patient/Vital Signs/Clinical Note), so nothing is
+	# removed from Outpatient and nobody's existing links break. No "Home" link: there's no
+	# dedicated Reception workspace (same as Pharmacy below).
+	"Reception": ("clipboard-check", [
+		doc("Patient", "user-round"),
+		doc("Patient Appointment", "calendar-days"),
+		doc("Fee Validity", "receipt"),
+		*submenu("Scheduling", "calendar-clock", [
+			doc("Healthcare Practitioner"), doc("Practitioner Schedule"), doc("Practitioner Availability"),
+			doc("Appointment Type"),
+		]),
+	]),
+	"Billing and Insurance": ("shield-check", [
+		link("Home", "Insurance", "Workspace", "house"),
+		doc("Sales Invoice", "receipt-text"),
+		doc("Payment Entry", "wallet"),
+		doc("Patient Insurance Policy", "shield-plus"),
+		doc("Patient Insurance Coverage", "shield-check"),
+		doc("Insurance Claim", "circle-dollar-sign"),
+		*submenu("Payors", "building-2", [
+			doc("Insurance Payor"), doc("Insurance Payor Contract"), doc("Insurance Payor Eligibility Plan"),
+			doc("Item Insurance Eligibility"),
+		]),
+		*submenu("Reports", "sheet", [report("Accounts Receivable"), report("Sales Register")]),
 	]),
 	"Outpatient": ("stethoscope", [
 		link("Home", "Outpatient", "Workspace", "house"),
@@ -71,6 +105,37 @@ MENUS = {
 			doc("Appointment Type"),
 		]),
 		*submenu("Reports", "sheet", [report("Patient Appointment Analytics"), report("Diagnosis Trends")]),
+	]),
+	"Diagnostics": ("microscope", [
+		link("Home", "Diagnostics", "Workspace", "house"),
+		doc("Lab Test", "flask-conical"),
+		doc("Sample Collection", "test-tube"),
+		doc("Observation", "activity"),
+		doc("Diagnostic Report", "file-text"),
+		doc("Specimen", "test-tubes"),
+		doc("Clinical Procedure", "syringe"),
+		*submenu("Lab Setup", "database", [
+			doc("Lab Test Template"), doc("Observation Template"), doc("Lab Test Sample"), doc("Sample Type"),
+			doc("Lab Test UOM"),
+		]),
+		*submenu("Microbiology", "microscope", [doc("Organism"), doc("Antibiotic"), doc("Sensitivity")]),
+		*submenu("Procedure Setup", "syringe", [doc("Clinical Procedure Template")]),
+		*submenu("Reports", "sheet", [report("Lab Test Report")]),
+	]),
+	"Pharmacy": ("pill", [
+		doc("Medication Request", "clipboard-list"),
+		doc("Inpatient Medication Entry", "pill-bottle"),
+		doc("Medication", "pill"),
+		doc("Stock Entry", "layers"),
+		doc("Medication Alert Log", "badge-alert"),
+		# Item/Warehouse already exist (ERPNext) but weren't surfaced here -- added so the
+		# "/Inventory" half of this menu's demo label points at something real, not just dispensing.
+		*submenu("Inventory", "warehouse", [doc("Item"), doc("Warehouse")]),
+		*submenu("Drug Master", "book-open", [
+			doc("Medication Class"), doc("Medication Interaction"), doc("Allergy"), doc("Dosage Form"),
+			doc("Prescription Dosage"), doc("Prescription Duration"),
+		]),
+		*submenu("Reports", "sheet", [report("Medication Item wise Sales"), report("Stock Balance")]),
 	]),
 	"Emergency": ("siren", [
 		link("Home", "Emergency", "Workspace", "house"),
@@ -95,34 +160,6 @@ MENUS = {
 		]),
 		*submenu("Reports", "sheet", [report("Inpatient Medication Orders")]),
 	]),
-	"Diagnostics": ("microscope", [
-		link("Home", "Diagnostics", "Workspace", "house"),
-		doc("Lab Test", "flask-conical"),
-		doc("Sample Collection", "test-tube"),
-		doc("Observation", "activity"),
-		doc("Diagnostic Report", "file-text"),
-		doc("Specimen", "test-tubes"),
-		doc("Clinical Procedure", "syringe"),
-		*submenu("Lab Setup", "database", [
-			doc("Lab Test Template"), doc("Observation Template"), doc("Lab Test Sample"), doc("Sample Type"),
-			doc("Lab Test UOM"),
-		]),
-		*submenu("Microbiology", "microscope", [doc("Organism"), doc("Antibiotic"), doc("Sensitivity")]),
-		*submenu("Procedure Setup", "syringe", [doc("Clinical Procedure Template")]),
-		*submenu("Reports", "sheet", [report("Lab Test Report")]),
-	]),
-	"Pharmacy": ("pill", [
-		doc("Medication Request", "clipboard-list"),
-		doc("Inpatient Medication Entry", "pill-bottle"),
-		doc("Medication", "pill"),
-		doc("Stock Entry", "layers"),
-		doc("Medication Alert Log", "badge-alert"),
-		*submenu("Drug Master", "book-open", [
-			doc("Medication Class"), doc("Medication Interaction"), doc("Allergy"), doc("Dosage Form"),
-			doc("Prescription Dosage"), doc("Prescription Duration"),
-		]),
-		*submenu("Reports", "sheet", [report("Medication Item wise Sales"), report("Stock Balance")]),
-	]),
 	"Rehabilitation": ("dumbbell", [
 		link("Home", "Rehabilitation", "Workspace", "house"),
 		doc("Therapy Plan", "clipboard-list"),
@@ -136,19 +173,6 @@ MENUS = {
 			doc("Patient Assessment Template"), doc("Patient Assessment Parameter"),
 		]),
 		*submenu("Reports", "sheet", [report("Planned vs Actual Therapy Session")]),
-	]),
-	"Billing and Insurance": ("shield-check", [
-		link("Home", "Insurance", "Workspace", "house"),
-		doc("Sales Invoice", "receipt-text"),
-		doc("Payment Entry", "wallet"),
-		doc("Patient Insurance Policy", "shield-plus"),
-		doc("Patient Insurance Coverage", "shield-check"),
-		doc("Insurance Claim", "circle-dollar-sign"),
-		*submenu("Payors", "building-2", [
-			doc("Insurance Payor"), doc("Insurance Payor Contract"), doc("Insurance Payor Eligibility Plan"),
-			doc("Item Insurance Eligibility"),
-		]),
-		*submenu("Reports", "sheet", [report("Accounts Receivable"), report("Sales Register")]),
 	]),
 	"Healthcare Setup": ("settings", [
 		link("Home", "Setup", "Workspace", "house"),
@@ -175,6 +199,21 @@ WORKSPACE_MENU = {
 	"Insurance": "Billing and Insurance", "Setup": "Healthcare Setup",
 }
 # Which menu a Healthcare doctype opens in when reached from search or a link: the first area menu
-# in this order that lists it. The overview menu claims nothing, it is a launcher.
-OWNERSHIP_ORDER = ["Outpatient", "Emergency", "Inpatient", "Diagnostics", "Pharmacy", "Rehabilitation",
-                   "Billing and Insurance", "Healthcare Setup"]
+# in this order that lists it. The overview menu claims nothing, it is a launcher. Reception leads
+# so Patient/Patient Appointment are owned by the front-of-flow menu, matching the demo narrative
+# (reception owns registration+booking) rather than the clinical department.
+OWNERSHIP_ORDER = ["Reception", "Outpatient", "Emergency", "Inpatient", "Diagnostics", "Pharmacy",
+                   "Rehabilitation", "Billing and Insurance", "Healthcare Setup"]
+
+# Demo-facing display text for a menu, where it should read differently from its stable
+# MENUS/module key above (see the MENUS docstring for why the key itself can't just be renamed).
+# A menu not listed here displays as its own key, unchanged. No "/" in any value: a Sidebar's
+# title becomes part of its desk URL, and Frappe refuses "/?#%\" there
+# (frappe/desk/doctype/sidebar/sidebar.py:UNROUTABLE_IN_A_TITLE) -- "&" and "-" are both fine.
+MENU_LABELS = {
+	"Reception": "Reception & Check-in",
+	"Billing and Insurance": "Finance & Billing",
+	"Outpatient": "Doctor - OPDs",
+	"Diagnostics": "Lab",
+	"Pharmacy": "Pharmacy & Inventory",
+}

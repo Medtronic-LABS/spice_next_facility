@@ -1,4 +1,5 @@
 Outpatient
+Reception
 Emergency
 Inpatient
 Diagnostics
