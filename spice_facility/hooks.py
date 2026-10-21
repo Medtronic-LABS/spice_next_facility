@@ -59,6 +59,11 @@ override_whitelisted_methods = {
 	"frappe_theme.dt_api.get_chart_data": "spice_facility.overrides.frappe_theme.get_chart_data",
 }
 
+# Consumed from frappe_theme (third-party; not modified) -- My Theme's existing hide_side_bar /
+# hide_form_comment / hide_fields_comment toggles. See fixtures/my_theme.json for why it's a full
+# snapshot, not just the three fields.
+fixtures = ["My Theme"]
+
 before_install = "spice_facility.setup.install.before_install"
 after_install = "spice_facility.setup.install.after_install"
 # Re-applied on every migrate: a Health update can re-import its workspaces and settings.
