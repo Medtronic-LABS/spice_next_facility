@@ -53,13 +53,24 @@ def remove_navigation():
 	if dock:
 		frappe.delete_doc("Dock", dock, ignore_permissions=True, force=True)
 	for title in MENUS:
-		if frappe.db.exists("Sidebar", title):
-			frappe.delete_doc("Sidebar", title, ignore_permissions=True, force=True)
+		name = sidebar_name(title)
+		if frappe.db.exists("Sidebar", name):
+			frappe.delete_doc("Sidebar", name, ignore_permissions=True, force=True)
 	frappe.clear_cache()
 
 
 def menu_module(title):
 	return HOST_MODULE if title == HOST_MODULE else title
+
+
+def sidebar_name(title):
+	"""Sidebar's autoname is `field:title`, so its docname IS whatever this returns -- never the bare
+	MENUS/module key once MENU_LABELS gives that key a different display title. Every lookup against
+	the Sidebar doctype (exists/get_doc/delete_doc) must go through this, not the key directly, or an
+	idempotent re-run (apply_navigation fires from both after_install and after_migrate) looks up the
+	old name, finds nothing, and tries to insert a second row under the name the first run already
+	took -- a DuplicateEntryError, not a no-op."""
+	return MENU_LABELS.get(title, title)
 
 
 def missing_targets():
@@ -94,11 +105,13 @@ def doctype_owners():
 
 
 def upsert_sidebar(title, icon, items, owner):
-	sidebar = frappe.get_doc("Sidebar", title) if frappe.db.exists("Sidebar", title) else frappe.new_doc("Sidebar")
-	# `title` (the MENUS/module key) stays the docname/module for routing; the *displayed* title
-	# can read differently -- see MENU_LABELS in menus.py for why.
+	name = sidebar_name(title)
+	sidebar = frappe.get_doc("Sidebar", name) if frappe.db.exists("Sidebar", name) else frappe.new_doc("Sidebar")
+	# `title` (the MENUS/module key) stays the `module` field for routing; the Sidebar's own docname
+	# and displayed title are `name` (sidebar_name(title)), which can read differently -- see
+	# MENU_LABELS in menus.py for why.
 	sidebar.update({
-		"title": MENU_LABELS.get(title, title),
+		"title": name,
 		"app": HOST_APP,
 		"module": menu_module(title),
 		"header_icon": icon,
@@ -126,10 +139,12 @@ def upsert_dock(entries):
 	dock.set(
 		"items",
 		[
+			# `sidebar` here is already the Sidebar's resolved docname (upsert_sidebar's return value,
+			# i.e. sidebar_name(title)) -- not a MENUS key, so no further MENU_LABELS lookup applies.
 			{
 				"link_type": "Sidebar",
 				"link_to": sidebar,
-				"title": MENU_LABELS.get(sidebar, sidebar),
+				"title": sidebar,
 				"icon": icon,
 				"added": 1,
 				"hidden": 0,

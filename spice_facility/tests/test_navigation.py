@@ -8,6 +8,7 @@ from spice_facility.desk_navigation.apply import (
 	doctype_owners,
 	menu_module,
 	missing_targets,
+	sidebar_name,
 	site_dock_name,
 )
 from spice_facility.desk_navigation.menus import HOST_MODULE, MENUS, WORKSPACE_MENU
@@ -22,12 +23,14 @@ class TestDeskNavigation(IntegrationTestCase):
 		self.assertEqual(missing_targets(), [])
 
 	def test_each_menu_is_a_sidebar_in_its_own_module(self):
+		# A menu's Sidebar docname is sidebar_name(title) (MENU_LABELS' display text, where set), never
+		# the bare MENUS key -- see apply.sidebar_name for why that distinction has to hold.
 		for title in MENUS:
-			self.assertEqual(frappe.db.get_value("Sidebar", title, "module"), menu_module(title))
+			self.assertEqual(frappe.db.get_value("Sidebar", sidebar_name(title), "module"), menu_module(title))
 
 	def test_dock_lists_every_menu_in_order(self):
 		items = frappe.get_all("Dock Item", {"parent": site_dock_name()}, pluck="link_to", order_by="idx")
-		self.assertEqual(items, list(MENUS))
+		self.assertEqual(items, [sidebar_name(title) for title in MENUS])
 
 	def test_area_dashboards_open_in_their_menu(self):
 		for workspace, menu in WORKSPACE_MENU.items():
@@ -39,7 +42,7 @@ class TestDeskNavigation(IntegrationTestCase):
 			claimed = frappe.get_all(
 				"Sidebar Item", {"link_to": doctype, "is_default_module": 1, "parenttype": "Sidebar"}, pluck="parent"
 			)
-			self.assertEqual(claimed, [menu], doctype)
+			self.assertEqual(claimed, [sidebar_name(menu)], doctype)
 		self.assertNotIn(HOST_MODULE, owners.values())
 
 	def test_reapplying_is_idempotent(self):
