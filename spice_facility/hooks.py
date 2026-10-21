@@ -5,6 +5,30 @@ app_description = "SPICE facility layer on Frappe Health: desk navigation, defau
 app_email = "admin@medtroniclabs.org"
 app_license = "gpl-3.0"
 
+# This app owns its Sidebars/Dock (desk_navigation/menus.py's HOST_APP), so the rail built from
+# MENUS there is this app's own rail, not Health's -- app_landing_route's dock-fallback
+# (frappe/public/js/frappe/ui/sidebar/sidebar.js) would resolve through it. Routing explicitly
+# instead, the same way healthcare's and erpnext's own hooks do, so the icon's landing page is a
+# single deterministic value rather than "whichever dock row sorts first": "Healthcare" is the
+# Workspace desk_navigation's own "Home" link treats as the front door.
+app_home = "/desk/healthcare"
+
+# Each item in the list will be shown as an app in the apps page.
+add_to_apps_screen = [
+	{
+		"name": app_name,
+		"logo": "/assets/spice_facility/images/spice_facility.svg",
+		"title": app_title,
+		"route": app_home,
+		"has_permission": "frappe.permissions.check_app_permission",
+	}
+]
+
+# Desk/login page logo -- see frappe.core.doctype.navbar_settings.get_app_logo's
+# fallback chain (Website Settings.app_logo -> Navbar Settings.app_logo -> this
+# hook).
+app_logo_url = "/assets/spice_facility/images/spice_facility.svg"
+
 # Frappe Health ships as the `healthcare` app (github.com/frappe/health) and needs ERPNext;
 # frappe_theme renders the `sva_ft` blocks on the Overview tab of Health forms (form_ux/).
 required_apps = ["erpnext", "healthcare", "frappe_theme"]

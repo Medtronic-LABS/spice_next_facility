@@ -6,7 +6,8 @@ Everything written is site content, so the Health app is never edited:
     every workspace opens in whichever Health menu sorts first.
   - one `Sidebar` (standard=0) per menu. Non-standard rows are not orphans, so migrate keeps them.
     `is_default_module` marks the menu that owns each Health doctype.
-  - the site layer of the `healthcare` `Dock` (standard=0, user="") listing the menus.
+  - the site layer of this app's own `Dock` (standard=0, user="") listing the menus -- see
+    menus.HOST_APP for why it is this app's name, not Health's.
 
 Idempotent: every menu and the dock are rebuilt from the spec on each call.
 """

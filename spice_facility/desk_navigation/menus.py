@@ -3,7 +3,13 @@
 Pure data. `apply.py` writes it; change menus here, then `bench migrate` (or reinstall) applies it.
 """
 
-HOST_APP = "healthcare"
+# The Sidebars/Dock built from MENUS below are site content owned by this app, not `healthcare` --
+# the app on the apps screen that opens them is spice_facility, so the dock the server resolves
+# for it (app_landing_route -> collect_dock_entries(app)) must be tagged with this app's name too.
+# HOST_MODULE stays "Healthcare": that's the *module* name Health itself ships and that the
+# "Healthcare" menu below falls back to for any Healthcare document opened outside the dock --
+# unrelated to which app owns the dock/sidebar rows.
+HOST_APP = "spice_facility"
 HOST_MODULE = "Healthcare"
 
 
