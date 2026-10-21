@@ -17,7 +17,7 @@ set -eu
 : "${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}"
 DB_HOST="${DB_HOST:-mariadb}"
 DB_PORT="${DB_PORT:-3306}"
-APPS="erpnext healthcare frappe_theme spice_facility"
+APPS="erpnext healthcare frappe_theme fhir_gateway spice_facility"
 FINGERPRINT="/home/frappe/migrate-fingerprint"
 
 cd /home/frappe/frappe-bench
