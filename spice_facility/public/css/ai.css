@@ -47,7 +47,7 @@
 }
 
 /* side gutters so the chat never touches the desk sidebar or the window edge */
-.sf-ask-page { max-width: 1280px; margin: 0 auto; padding: 8px clamp(12px, 2.5vw, 32px) 24px; }
+.sf-ask-page { max-width: 1600px; margin: 0 auto; padding: 8px clamp(12px, 2.5vw, 32px) 24px; }
 .sf-ask-head { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .sf-ask-context { flex: 1; min-width: 0; }
 .sf-ask-head .icon { width: 14px; height: 14px; }
@@ -134,7 +134,11 @@
 .sf-ask-composer:focus-within { border-color: color-mix(in srgb, var(--sf-accent) 45%, var(--border-color)); }
 .sf-ask-composer.sf-multiline { align-items: flex-end; border-radius: 20px; }
 .sf-ask-input { flex: 1; min-width: 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--text-color); font-size: var(--text-base); line-height: 22px; padding: 8px 0; max-height: 200px; overflow-y: auto; box-shadow: none; }
-.sf-ask-input::placeholder { color: var(--text-muted); }
+/* nowrap/ellipsis on the placeholder only -- a real typed value must still wrap, since
+   composer.js's fit_input() grows the box by measuring scrollHeight after wrapping. Without this,
+   a narrow composer (tablet widths, ~860-1300px, where the Chats sidebar eats most of the row)
+   wraps the long placeholder onto a second line that the box's unwrapped height then clips. */
+.sf-ask-input::placeholder { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sf-ask-composer-tools { display: flex; align-items: center; gap: 6px; flex: none; }
 .sf-ask-provider { border: 0; background: transparent; color: var(--text-muted); font-size: var(--text-sm); max-width: 200px; padding: 4px 2px; cursor: pointer; outline: 0; }
 .sf-ask-provider:hover { color: var(--text-color); }
