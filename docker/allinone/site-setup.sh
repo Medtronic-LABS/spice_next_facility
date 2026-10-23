@@ -63,6 +63,13 @@ if ! ./env/bin/python -c 'import json, sys; sys.exit(0 if json.load(open(sys.arg
 		"$(./env/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 fi
 
+# Server Script is off by default and can only be turned on bench-wide, in common_site_config.json --
+# frappe/utils/safe_exec.py's is_safe_exec_enabled() reads only that file, never a per-site
+# site_config.json, so this cannot be a `bench --site` call. Accepted trade-off: a Server Script runs
+# arbitrary Python from Desk, gated by frappe's own "Script Manager"/System Manager role checks on the
+# doctype itself -- this flag only removes the bench-level kill switch on top of that.
+bench set-config server_script_enabled true -g
+
 installed_now=0
 installed="$(bench --site "${SITE_NAME}" list-apps | awk '{print $1}')"  # one bench start-up, not one per app
 for app in ${APPS}; do
