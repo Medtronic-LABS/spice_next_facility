@@ -27,6 +27,8 @@ spice_facility.ai.strings = {
 		none: __("No AI summary yet for this record."),
 		stale: __("Out of date — the record changed since this summary"),
 		stale_short: __("Out of date"),
+		show_more: (n) => (n ? (n === 1 ? __("Show full summary (+1 alert)") : __("Show full summary (+{0} alerts)", [n])) : __("Show full summary")),
+		show_less: __("Show less"),
 		failed: __("The summary could not be generated."),
 		key_findings: __("Key findings"),
 		alerts: __("Alerts"),

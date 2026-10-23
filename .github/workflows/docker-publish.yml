@@ -4,8 +4,10 @@
 #   base  ghcr.io/medtronic-labs/spice_next_facility-base:<key>  bench + Frappe + ERPNext + Frappe Health +
 #         frappe_theme at the commits pinned in docker/base/versions.env. <key> hashes versions.env and the base
 #         Dockerfile, so it is rebuilt only when one of them changes.
-#   app   ghcr.io/medtronic-labs/spice_next_facility:<tags>       spice_facility on top of the base: a push that
-#         changes only this app builds a few small layers, and EC2 pulls megabytes.
+#   app   ghcr.io/medtronic-labs/spice_next_facility:<tags>       spice_facility AND fhir_gateway (a separate
+#         repo, pinned in docker/allinone/fhir_gateway.env -- it needs only healthcare, nothing from
+#         spice_facility) on top of the base: a push that changes only one of them builds a few small layers,
+#         and EC2 pulls megabytes.
 #
 # Trust: only pushes to develop/training/main build and publish the base, with a signed build-provenance
 # attestation. Every run reuses a published base only if that attestation proves it was built by this workflow
@@ -60,6 +62,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Pin for fhir_gateway (a separate repo)
+        run: grep -E '^[A-Z_]+=' docker/allinone/fhir_gateway.env >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Medtronic-LABS/healthcare_fhir_gateway
+          ref: ${{ env.FHIR_GATEWAY_COMMIT }}
+          path: .checks/fhir_gateway
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
@@ -67,7 +77,9 @@ jobs:
         with:
           node-version: "24"
       - name: Python compiles
-        run: python -m compileall -q spice_facility
+        run: |
+          python -m compileall -q spice_facility
+          python -m compileall -q .checks/fhir_gateway/fhir_gateway
       - name: JavaScript parses
         run: find spice_facility -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
       - name: Shell scripts parse
@@ -228,6 +240,23 @@ jobs:
           path: apps/spice_facility
           persist-credentials: false
 
+      - name: Pin for fhir_gateway (a separate repo)
+        run: grep -E '^[A-Z_]+=' apps/spice_facility/docker/allinone/fhir_gateway.env >> "$GITHUB_ENV"
+
+      - name: Checkout fhir_gateway
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Medtronic-LABS/healthcare_fhir_gateway
+          ref: ${{ env.FHIR_GATEWAY_COMMIT }}
+          path: apps/fhir_gateway
+          persist-credentials: false
+
+      # A tag/branch can move upstream; refuse to build anything but the commit pinned in fhir_gateway.env.
+      - name: fhir_gateway is the pinned commit
+        run: |
+          actual=$(git -C apps/fhir_gateway rev-parse HEAD)
+          [ "${actual}" = "${FHIR_GATEWAY_COMMIT}" ] || { echo "apps/fhir_gateway is ${actual}, fhir_gateway.env pins ${FHIR_GATEWAY_COMMIT}" >&2; exit 1; }
+
       - name: Image tag for this commit
         id: tag
         run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
@@ -301,7 +330,8 @@ jobs:
             -f apps/spice_facility/docker/allinone/Dockerfile \
             --build-arg BASE_IMAGE="${BASE_REF}" \
             "${label_args[@]}" -t "${CI_IMAGE}" .
-          if docker run --rm --entrypoint sh "${CI_IMAGE}" -c 'test -e /home/frappe/frappe-bench/apps/spice_facility/.git'; then
+          if docker run --rm --entrypoint sh "${CI_IMAGE}" -c \
+              'test -e /home/frappe/frappe-bench/apps/spice_facility/.git || test -e /home/frappe/frappe-bench/apps/fhir_gateway/.git'; then
             echo "::error::.git reached the image; check docker/allinone/Dockerfile.dockerignore"
             exit 1
           fi
@@ -363,6 +393,7 @@ jobs:
               cd /home/frappe/frappe-bench
               grep -q "\"encryption_key\"" sites/ci.localhost/site_config.json || { echo "site-setup left no encryption_key" >&2; exit 1; }
               bench --site ci.localhost set-config allow_tests true
+              bench --site ci.localhost run-tests --app fhir_gateway
               bench --site ci.localhost run-tests --app spice_facility
             '
 

@@ -6,7 +6,8 @@ Everything written is site content, so the Health app is never edited:
     every workspace opens in whichever Health menu sorts first.
   - one `Sidebar` (standard=0) per menu. Non-standard rows are not orphans, so migrate keeps them.
     `is_default_module` marks the menu that owns each Health doctype.
-  - the site layer of the `healthcare` `Dock` (standard=0, user="") listing the menus.
+  - the site layer of this app's own `Dock` (standard=0, user="") listing the menus -- see
+    menus.HOST_APP for why it is this app's name, not Health's.
 
 Idempotent: every menu and the dock are rebuilt from the spec on each call.
 """
@@ -16,6 +17,7 @@ import frappe
 from spice_facility.desk_navigation.menus import (
 	HOST_APP,
 	HOST_MODULE,
+	MENU_LABELS,
 	MENUS,
 	OWNERSHIP_ORDER,
 	WORKSPACE_MENU,
@@ -51,13 +53,24 @@ def remove_navigation():
 	if dock:
 		frappe.delete_doc("Dock", dock, ignore_permissions=True, force=True)
 	for title in MENUS:
-		if frappe.db.exists("Sidebar", title):
-			frappe.delete_doc("Sidebar", title, ignore_permissions=True, force=True)
+		name = sidebar_name(title)
+		if frappe.db.exists("Sidebar", name):
+			frappe.delete_doc("Sidebar", name, ignore_permissions=True, force=True)
 	frappe.clear_cache()
 
 
 def menu_module(title):
 	return HOST_MODULE if title == HOST_MODULE else title
+
+
+def sidebar_name(title):
+	"""Sidebar's autoname is `field:title`, so its docname IS whatever this returns -- never the bare
+	MENUS/module key once MENU_LABELS gives that key a different display title. Every lookup against
+	the Sidebar doctype (exists/get_doc/delete_doc) must go through this, not the key directly, or an
+	idempotent re-run (apply_navigation fires from both after_install and after_migrate) looks up the
+	old name, finds nothing, and tries to insert a second row under the name the first run already
+	took -- a DuplicateEntryError, not a no-op."""
+	return MENU_LABELS.get(title, title)
 
 
 def missing_targets():
@@ -92,8 +105,18 @@ def doctype_owners():
 
 
 def upsert_sidebar(title, icon, items, owner):
-	sidebar = frappe.get_doc("Sidebar", title) if frappe.db.exists("Sidebar", title) else frappe.new_doc("Sidebar")
-	sidebar.update({"title": title, "app": HOST_APP, "module": menu_module(title), "header_icon": icon, "standard": 0})
+	name = sidebar_name(title)
+	sidebar = frappe.get_doc("Sidebar", name) if frappe.db.exists("Sidebar", name) else frappe.new_doc("Sidebar")
+	# `title` (the MENUS/module key) stays the `module` field for routing; the Sidebar's own docname
+	# and displayed title are `name` (sidebar_name(title)), which can read differently -- see
+	# MENU_LABELS in menus.py for why.
+	sidebar.update({
+		"title": name,
+		"app": HOST_APP,
+		"module": menu_module(title),
+		"header_icon": icon,
+		"standard": 0,
+	})
 	rows = []
 	for item in items:
 		row = {key: value for key, value in item.items() if value is not None}
@@ -116,7 +139,16 @@ def upsert_dock(entries):
 	dock.set(
 		"items",
 		[
-			{"link_type": "Sidebar", "link_to": sidebar, "title": sidebar, "icon": icon, "added": 1, "hidden": 0}
+			# `sidebar` here is already the Sidebar's resolved docname (upsert_sidebar's return value,
+			# i.e. sidebar_name(title)) -- not a MENUS key, so no further MENU_LABELS lookup applies.
+			{
+				"link_type": "Sidebar",
+				"link_to": sidebar,
+				"title": sidebar,
+				"icon": icon,
+				"added": 1,
+				"hidden": 0,
+			}
 			for sidebar, icon in entries
 		],
 	)

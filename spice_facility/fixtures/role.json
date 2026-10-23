@@ -1,0 +1,16 @@
+[
+  {
+    "doctype": "Role",
+    "name": "Receptionist",
+    "role_name": "Receptionist",
+    "desk_access": 1,
+    "custom": 1
+  },
+  {
+    "doctype": "Role",
+    "name": "Finance Staff",
+    "role_name": "Finance Staff",
+    "desk_access": 1,
+    "custom": 1
+  }
+]
