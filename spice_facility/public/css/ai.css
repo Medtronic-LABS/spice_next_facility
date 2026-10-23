@@ -47,7 +47,7 @@
 }
 
 /* side gutters so the chat never touches the desk sidebar or the window edge */
-.sf-ask-page { max-width: 1280px; margin: 0 auto; padding: 8px clamp(12px, 2.5vw, 32px) 24px; }
+.sf-ask-page { max-width: 1600px; margin: 0 auto; padding: 8px clamp(12px, 2.5vw, 32px) 24px; }
 .sf-ask-head { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .sf-ask-context { flex: 1; min-width: 0; }
 .sf-ask-head .icon { width: 14px; height: 14px; }
